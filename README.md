@@ -12,9 +12,7 @@ Phone (Aight App)  ──WSS──►  Cloudflare Relay (DO)  ◄──WSS──
                               Plugin ──MCP/stdio──► Claude Code
 ```
 
-**Relay mode** (default): Plugin connects outbound to Cloudflare Workers relay. No port forwarding, no Tailscale, no LAN requirement. A 6-digit pairing code links your phone.
-
-**Local mode** (`AIGHT_LOCAL=1`): Plugin runs a WebSocket server on your LAN. Direct connection, zero cloud.
+Plugin connects outbound to the Cloudflare Workers relay at `channels.aight.cool`. No port forwarding, no Tailscale, no LAN requirement. A 6-digit pairing code links your phone.
 
 ## Setup
 
@@ -23,39 +21,40 @@ cd aight-channel-plugin
 bun install
 ```
 
-### Relay mode (recommended)
+### Usage
+
 ```bash
-AIGHT_RELAY_URL=https://channels.aight.cool bun run src/index.ts
+# Load as a Claude Code channel plugin
+claude --dangerously-load-development-channels server:aight
 ```
 
 The plugin will:
-1. Create a relay room
+1. Connect to the relay at `channels.aight.cool`
 2. Display a **6-digit pairing code** in the terminal
-3. You enter the code in the Aight app → connected!
+3. Enter the code in the Aight app → connected!
 
-### Local mode
+### Custom relay URL
+
+To use a self-hosted relay:
+
 ```bash
-AIGHT_LOCAL=1 bun run src/index.ts
+AIGHT_RELAY_URL=https://my-relay.example.com bun run src/index.ts
 ```
-
-Connect your phone to `ws://<your-mac-ip>:8792/ws` (or scan the QR code).
 
 ## Environment Variables
 
 | Variable | Description | Default |
 |---|---|---|
-| `AIGHT_RELAY_URL` | Relay server URL | _(none — local mode)_ |
-| `AIGHT_LOCAL` | Force local mode | `0` |
-| `AIGHT_PORT` | Local WebSocket port | `8792` |
+| `AIGHT_RELAY_URL` | Relay server URL | `https://channels.aight.cool` |
 
 ## WebSocket Protocol
 
-### App → Plugin
+### App → Plugin (via relay)
 ```json
 { "type": "message", "id": "msg_123", "content": "hello", "sender": { "name": "Bruno", "device": "iPhone" } }
 ```
 
-### Plugin → App
+### Plugin → App (via relay)
 ```json
 { "type": "connected", "channelName": "aight", "timestamp": "..." }
 { "type": "ack", "messageId": "msg_123", "timestamp": "..." }
@@ -64,13 +63,26 @@ Connect your phone to `ws://<your-mac-ip>:8792/ws` (or scan the QR code).
 { "type": "reaction", "emoji": "👍", "messageId": "msg_123", "timestamp": "..." }
 ```
 
-## Relay
+### Relay control messages
+```json
+{ "type": "paired", "sessionToken": "..." }
+{ "type": "partner_connected", "timestamp": "..." }
+{ "type": "partner_disconnected", "timestamp": "..." }
+{ "type": "waiting_for_pair", "timestamp": "..." }
+{ "type": "reconnected", "partnerConnected": true, "timestamp": "..." }
+```
 
-The relay lives in `relay/` — a Cloudflare Worker + Durable Objects. See [relay/DEPLOY.md](relay/DEPLOY.md) for setup.
+## Pairing Flow
 
-### Pairing flow
-1. Plugin: `POST /rooms` → `{ roomId, pairingCode, pluginToken, pluginWsUrl }`
-2. Plugin connects to `pluginWsUrl`
-3. App: `POST /pair { code }` → `{ roomId, appToken, appWsUrl }`
-4. App connects to `appWsUrl`
-5. Durable Object bridges the two WebSockets
+1. Plugin calls `POST /pair` on the relay → gets `{ code, sessionToken, sessionId }`
+2. Plugin connects to `wss://channels.aight.cool/ws/plugin?session=<token>&id=<sessionId>`
+3. Plugin displays the 6-digit code in Claude Code terminal
+4. User enters code in Aight app
+5. App connects to `wss://channels.aight.cool/ws/app?code=<code>`
+6. Relay pairs the two, sends `{ type: "paired" }` to both
+7. Messages flow bidirectionally through the relay
+
+## Related
+
+- [aight-channel-relay](https://github.com/aight-cool/aight-channel-relay) — the Cloudflare Worker relay
+- [Aight](https://aight.cool) — the iOS app
