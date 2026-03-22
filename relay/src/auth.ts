@@ -54,11 +54,20 @@ export async function validateToken(
 
 /** Generate a 6-char alphanumeric pairing code (uppercase, no ambiguous chars) */
 export function generatePairingCode(): string {
-  // Exclude ambiguous: 0/O, 1/I/L
   const chars = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
-  const bytes = new Uint8Array(6);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes)
-    .map((b) => chars[b % chars.length])
-    .join("");
+  const threshold = Math.floor(256 / chars.length) * chars.length;
+  const code: string[] = [];
+  const buf = new Uint8Array(12); // oversized to minimize getRandomValues calls
+  let idx = buf.length; // force initial fill
+  while (code.length < 6) {
+    if (idx >= buf.length) {
+      crypto.getRandomValues(buf);
+      idx = 0;
+    }
+    const b = buf[idx++];
+    if (b < threshold) {
+      code.push(chars[b % chars.length]);
+    }
+  }
+  return code.join("");
 }

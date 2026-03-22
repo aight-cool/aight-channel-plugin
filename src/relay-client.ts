@@ -27,8 +27,6 @@ export interface RelayClientCallbacks {
     content?: string;
     sender?: { name?: string; device?: string };
   }) => void;
-  /** Called when relay sends a reply back to the app */
-  onSend: (data: object) => void;
   /** Called when connection state changes */
   onStateChange: (
     state: "connecting" | "connected" | "disconnected" | "error",

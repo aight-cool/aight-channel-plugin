@@ -26,6 +26,27 @@ type SendFn = (data: object) => void;
 const senders: Map<string, SendFn> = new Map();
 let messageCounter = 0;
 
+/** Broadcast payload to all connected senders, pruning failed ones. */
+function broadcast(payload: object): number {
+  let sent = 0;
+  for (const [id, send] of senders) {
+    try {
+      send(payload);
+      sent++;
+    } catch (err) {
+      console.error(`[aight] Failed to send to ${id}: ${err}`);
+      senders.delete(id);
+    }
+  }
+  return sent;
+}
+
+function sentResult(sent: number, verb = "sent"): string {
+  return sent > 0
+    ? `${verb} (${sent} client${sent > 1 ? "s" : ""})`
+    : "no clients connected";
+}
+
 // ── MCP Server ──
 const mcp = new Server(
   { name: "aight", version: "0.1.0" },
@@ -91,22 +112,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       timestamp: new Date().toISOString(),
     };
 
-    let sent = 0;
-    for (const [id, send] of senders) {
-      try {
-        send(payload);
-        sent++;
-      } catch (err) {
-        console.error(`[aight] Failed to send to ${id}: ${err}`);
-        senders.delete(id);
-      }
-    }
-
-    const result =
-      sent > 0
-        ? `sent (${sent} client${sent > 1 ? "s" : ""})`
-        : "no clients connected";
-    return { content: [{ type: "text", text: result }] };
+    const sent = broadcast(payload);
+    return { content: [{ type: "text", text: sentResult(sent) }] };
   }
 
   if (name === "react") {
@@ -121,15 +128,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       timestamp: new Date().toISOString(),
     };
 
-    for (const [id, send] of senders) {
-      try {
-        send(payload);
-      } catch {
-        senders.delete(id);
-      }
-    }
-
-    return { content: [{ type: "text", text: "reaction sent" }] };
+    const sent = broadcast(payload);
+    return { content: [{ type: "text", text: sentResult(sent, "reaction sent") }] };
   }
 
   throw new Error(`Unknown tool: ${name}`);
@@ -161,10 +161,6 @@ async function forwardToMCP(data: {
     } catch (err) {
       console.error(`[aight] ❌ MCP notification failed: ${err}`);
     }
-  }
-
-  if (data.type === "ping") {
-    // Handled by sender-specific code (local sends pong, relay handles its own)
   }
 }
 
@@ -198,7 +194,6 @@ const relay = new RelayClient(RELAY_URL, {
       });
     }
   },
-  onSend: () => {},
   onStateChange: (state) => {
     console.error(`[aight-relay] State: ${state}`);
     if (state === "connected") {

@@ -56,8 +56,3 @@ Set the relay URL when starting the plugin:
 ```bash
 AIGHT_RELAY_URL=https://channels.aight.cool bun run src/index.ts
 ```
-
-Or for local-only mode:
-```bash
-AIGHT_LOCAL=1 bun run src/index.ts
-```

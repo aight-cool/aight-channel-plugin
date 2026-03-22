@@ -18,8 +18,14 @@ export interface Env {
 
 interface SessionInfo {
   ws: WebSocket;
-  role: "plugin" | "app";
+  role: Role;
   connectedAt: number;
+}
+
+type Role = "plugin" | "app";
+
+function otherRole(role: Role): Role {
+  return role === "plugin" ? "app" : "plugin";
 }
 
 const ROOM_TTL_MS = 10 * 60 * 1000; // 10 minutes with no connections → self-destruct
@@ -30,6 +36,11 @@ export class ChannelRoom implements DurableObject {
 
   constructor(state: DurableObjectState, _env: Env) {
     this.state = state;
+    // Restore sessions from hibernation — WebSocket objects survive but
+    // in-memory Maps don't. Recover role metadata from attachments.
+    for (const ws of this.state.getWebSockets()) {
+      this.recoverSession(ws);
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -73,15 +84,15 @@ export class ChannelRoom implements DurableObject {
 
     this.state.acceptWebSocket(server);
 
-    const sessionInfo: SessionInfo = {
-      ws: server,
-      role,
-      connectedAt: Date.now(),
-    };
+    const connectedAt = Date.now();
+    const sessionInfo: SessionInfo = { ws: server, role, connectedAt };
     this.sessions.set(server, sessionInfo);
 
+    // Persist role metadata so it survives DO hibernation
+    server.serializeAttachment({ role, connectedAt });
+
     // Notify the other side about the connection
-    this.notifyPeer(role, {
+    this.notifyPeer(otherRole(role), {
       type: "peer_connected",
       role,
       timestamp: new Date().toISOString(),
@@ -94,13 +105,13 @@ export class ChannelRoom implements DurableObject {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
-    const session = this.sessions.get(ws);
+    const session = this.sessions.get(ws) ?? this.recoverSession(ws);
     if (!session) return;
 
     // Forward to the peer (plugin ↔ app)
-    const peerRole = session.role === "plugin" ? "app" : "plugin";
+    const peer = otherRole(session.role);
     for (const [peerWs, peerSession] of this.sessions) {
-      if (peerSession.role === peerRole) {
+      if (peerSession.role === peer) {
         try {
           peerWs.send(message);
         } catch {
@@ -112,38 +123,34 @@ export class ChannelRoom implements DurableObject {
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string) {
+    await this.handleDisconnect(ws, code, reason);
+  }
+
+  async webSocketError(ws: WebSocket, _error: unknown) {
+    await this.handleDisconnect(ws, 1006, "WebSocket error");
+  }
+
+  /** Recover session metadata from a hibernated WebSocket's attachment. */
+  private recoverSession(ws: WebSocket): SessionInfo | undefined {
+    const attachment = ws.deserializeAttachment() as
+      | { role: Role; connectedAt: number }
+      | undefined;
+    if (!attachment) return undefined;
+    const info: SessionInfo = { ws, role: attachment.role, connectedAt: attachment.connectedAt };
+    this.sessions.set(ws, info);
+    return info;
+  }
+
+  private async handleDisconnect(ws: WebSocket, code: number, reason: string) {
     const session = this.sessions.get(ws);
     this.sessions.delete(ws);
 
     if (session) {
-      // Notify peer that the other side left
-      const peerRole = session.role === "plugin" ? "app" : "plugin";
-      this.notifyPeer(peerRole, {
+      this.notifyPeer(otherRole(session.role), {
         type: "peer_disconnected",
         role: session.role,
         code,
         reason,
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    // If no connections left, set alarm to clean up
-    if (this.sessions.size === 0) {
-      await this.state.storage.setAlarm(Date.now() + ROOM_TTL_MS);
-    }
-  }
-
-  async webSocketError(ws: WebSocket, error: unknown) {
-    const session = this.sessions.get(ws);
-    this.sessions.delete(ws);
-
-    if (session) {
-      const peerRole = session.role === "plugin" ? "app" : "plugin";
-      this.notifyPeer(peerRole, {
-        type: "peer_disconnected",
-        role: session.role,
-        code: 1006,
-        reason: "WebSocket error",
         timestamp: new Date().toISOString(),
       });
     }
@@ -158,7 +165,7 @@ export class ChannelRoom implements DurableObject {
     // Durable Object will be evicted from memory
   }
 
-  private notifyPeer(targetRole: "plugin" | "app", message: object) {
+  private notifyPeer(targetRole: Role, message: object) {
     const payload = JSON.stringify(message);
     for (const [ws, session] of this.sessions) {
       if (session.role === targetRole) {

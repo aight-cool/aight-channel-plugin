@@ -35,12 +35,21 @@ function json(data: object, status = 200): Response {
   });
 }
 
+function wsBaseUrl(url: URL): string {
+  const proto = url.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${url.host}`;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: cors() });
+    }
+
+    if (!env.RELAY_AUTH_SECRET) {
+      return json({ error: "Server misconfigured: missing RELAY_AUTH_SECRET" }, 500);
     }
 
     // ── Health ──
@@ -59,8 +68,7 @@ export default {
         expirationTtl: 300,
       });
 
-      const wsProto = url.protocol === "https:" ? "wss:" : "ws:";
-      const wsBase = `${wsProto}//${url.host}`;
+      const wsBase = wsBaseUrl(url);
 
       return json({
         roomId,
@@ -84,20 +92,18 @@ export default {
         return json({ error: "Invalid pairing code" }, 400);
       }
 
-      // Look up the room
+      // Look up room, then delete code immediately to minimize the
+      // TOCTOU window (KV has no atomic get-and-delete)
       const roomId = await env.PAIRING_CODES.get(code);
       if (!roomId) {
         return json({ error: "Invalid or expired pairing code" }, 404);
       }
+      await env.PAIRING_CODES.delete(code);
 
       // Generate app token
       const appToken = await deriveToken(env.RELAY_AUTH_SECRET, "app", roomId);
 
-      const wsProto = url.protocol === "https:" ? "wss:" : "ws:";
-      const wsBase = `${wsProto}//${url.host}`;
-
-      // Delete the code so it can't be reused
-      await env.PAIRING_CODES.delete(code);
+      const wsBase = wsBaseUrl(url);
 
       return json({
         roomId,
