@@ -24,6 +24,7 @@ import { homedir } from "os";
 const RELAY_URL = process.env.AIGHT_RELAY_URL || "https://channels.aight.cool";
 const STATE_DIR = join(homedir(), ".claude", "channels", "aight");
 const CODE_FILE = join(STATE_DIR, "pairing-code.txt");
+const SESSION_FILE = join(STATE_DIR, "relay-session.json");
 
 // ── Shared client tracking ──
 type SendFn = (data: object) => void;
@@ -179,7 +180,9 @@ await mcp.connect(transport);
 // ── Connect to relay ──
 console.error(`\n[aight] ⚡ Connecting to relay at ${RELAY_URL}`);
 
-const relay = new RelayClient(RELAY_URL, {
+const relay = new RelayClient(
+  RELAY_URL,
+  {
   onMessage: async (data) => {
     await forwardToMCP(data);
 
@@ -255,6 +258,8 @@ const relay = new RelayClient(RELAY_URL, {
       })
       .catch(() => {});
   },
-});
+  },
+  { sessionFile: SESSION_FILE },
+);
 
 await relay.start();
