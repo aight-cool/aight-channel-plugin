@@ -38,6 +38,8 @@ export interface RelayClientCallbacks {
   ) => void;
   /** Called when a pairing code is available for display */
   onPairingCode: (code: string, relayUrl: string) => void;
+  /** Called when successfully reconnected to a saved session (no re-pairing needed) */
+  onReconnected?: () => void;
 }
 
 export interface RelayClientOptions {
@@ -203,7 +205,14 @@ export class RelayClient {
 
     this.ws.addEventListener("open", () => {
       didConnect = true;
-      console.error(`[aight-relay] Connected to relay`);
+      if (isReconnect) {
+        console.error(
+          `[aight-relay] ✅ Reconnected to saved session — no re-pairing needed`,
+        );
+        this.callbacks.onReconnected?.();
+      } else {
+        console.error(`[aight-relay] Connected to relay`);
+      }
       this.callbacks.onStateChange("connected");
       this.startPing();
     });

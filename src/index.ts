@@ -270,6 +270,31 @@ const relay = new RelayClient(
       })
       .catch(() => {});
   },
+  onReconnected: () => {
+    process.stderr.write(
+      `\n[aight] ════════════════════════════════════════\n`,
+    );
+    process.stderr.write(
+      `[aight]   ✅ Reconnected to existing session\n`,
+    );
+    process.stderr.write(
+      `[aight]   App should connect automatically.\n`,
+    );
+    process.stderr.write(
+      `[aight] ════════════════════════════════════════\n\n`,
+    );
+
+    mcp
+      .notification({
+        method: "notifications/claude/channel",
+        params: {
+          content:
+            "📱 Aight channel reconnected to existing session — the app should connect automatically, no re-pairing needed.",
+          meta: { sender: "aight-plugin", device: "system" },
+        },
+      })
+      .catch(() => {});
+  },
   },
   { sessionFile: SESSION_FILE },
 );
