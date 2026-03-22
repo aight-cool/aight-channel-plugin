@@ -260,7 +260,7 @@ const relay = new RelayClient(
     // Write code to file so it's always accessible
     try {
       mkdirSync(STATE_DIR, { recursive: true });
-      writeFileSync(CODE_FILE, `${code}\n`);
+      writeFileSync(CODE_FILE, `${code}\n`, { mode: 0o600 });
       process.stderr.write(`[aight]   Code also written to: ${CODE_FILE}\n\n`);
     } catch (err) {
       process.stderr.write(`[aight] ⚠️  Failed to write code file: ${err}\n`);
