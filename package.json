@@ -1,0 +1,12 @@
+{
+  "name": "aight-channel",
+  "version": "0.0.1",
+  "description": "Aight mobile channel for Claude Code — chat with your session from your phone over LAN",
+  "scripts": {
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

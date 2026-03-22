@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "aight": {
+      "command": "bun",
+      "args": ["./src/index.ts"]
+    }
+  }
+}
