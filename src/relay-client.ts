@@ -7,9 +7,6 @@
  * 3. Display pairing code in terminal (+ QR code)
  * 4. App enters code → POST /pair → gets appWsUrl → connects
  * 5. Durable Object bridges the two WebSockets
- *
- * When AIGHT_RELAY_URL is set, the plugin uses the relay.
- * When not set (or AIGHT_LOCAL=1), it falls back to local WebSocket server.
  */
 
 const RECONNECT_DELAY_MS = 3000;

@@ -3,11 +3,7 @@
  * Aight Channel Plugin
  *
  * A Claude Code channel plugin that lets you chat with your session from your phone.
- *
- * Two modes:
- * - **Relay mode** (default): Connects to Cloudflare relay — works from anywhere.
- *   Set AIGHT_RELAY_URL=https://channels.aight.cool
- * - **Local mode** (AIGHT_LOCAL=1): Runs a WebSocket server on LAN — no cloud needed.
+ * Connects to the Cloudflare relay at channels.aight.cool for pairing.
  *
  * Usage:
  *   claude --dangerously-load-development-channels server:aight
@@ -21,9 +17,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { RelayClient } from "./relay-client";
 
-const PORT = parseInt(process.env.AIGHT_PORT || "8792", 10);
-const RELAY_URL = process.env.AIGHT_RELAY_URL || "";
-const LOCAL_MODE = process.env.AIGHT_LOCAL === "1" || !RELAY_URL;
+const RELAY_URL = process.env.AIGHT_RELAY_URL || "https://channels.aight.cool";
 
 // ── Shared client tracking ──
 type SendFn = (data: object) => void;
@@ -178,228 +172,61 @@ async function forwardToMCP(data: {
 const transport = new StdioServerTransport();
 await mcp.connect(transport);
 
-// ── Start in appropriate mode ──
+// ── Connect to relay ──
+console.error(`\n[aight] ⚡ Connecting to relay at ${RELAY_URL}`);
 
-if (!LOCAL_MODE && RELAY_URL) {
-  // ═══════════════════════════════════════════════════════════════════════════
-  // RELAY MODE — connect outbound to Cloudflare relay
-  // ═══════════════════════════════════════════════════════════════════════════
-  console.error(`\n[aight] ⚡ Relay mode — connecting to ${RELAY_URL}`);
+const relay = new RelayClient(RELAY_URL, {
+  onMessage: async (data) => {
+    await forwardToMCP(data);
 
-  const relay = new RelayClient(RELAY_URL, {
-    onMessage: async (data) => {
-      // Forward app messages to Claude
-      await forwardToMCP(data);
+    if (data.type === "message" && data.id) {
+      relay.send({
+        type: "ack",
+        messageId: data.id,
+        timestamp: new Date().toISOString(),
+      });
+      relay.send({
+        type: "typing",
+        timestamp: new Date().toISOString(),
+      });
+    }
 
-      // Send ack + typing for "message" type
-      if (data.type === "message" && data.id) {
-        relay.send({
-          type: "ack",
-          messageId: data.id,
-          timestamp: new Date().toISOString(),
-        });
-        relay.send({
-          type: "typing",
-          timestamp: new Date().toISOString(),
-        });
-      }
+    if (data.type === "ping") {
+      relay.send({
+        type: "pong",
+        timestamp: new Date().toISOString(),
+      });
+    }
+  },
+  onSend: () => {},
+  onStateChange: (state) => {
+    console.error(`[aight-relay] State: ${state}`);
+    if (state === "connected") {
+      senders.set("relay", (data) => relay.send(data));
+    } else {
+      senders.delete("relay");
+    }
+  },
+  onPairingCode: (code, relayUrl) => {
+    console.error(`\n[aight] ════════════════════════════════════════`);
+    console.error(`[aight]   📱 Pairing Code: ${code}`);
+    console.error(`[aight] ════════════════════════════════════════`);
+    console.error(`[aight]   Enter this code in the Aight app to connect.`);
+    console.error(`[aight]   Code expires in 5 minutes.\n`);
 
-      if (data.type === "ping") {
-        relay.send({
-          type: "pong",
-          timestamp: new Date().toISOString(),
-        });
-      }
-    },
-    onSend: () => {},
-    onStateChange: (state) => {
-      console.error(`[aight-relay] State: ${state}`);
-      if (state === "connected") {
-        senders.set("relay", (data) => relay.send(data));
-      } else {
-        senders.delete("relay");
-      }
-    },
-    onPairingCode: (code, relayUrl) => {
-      console.error(`\n[aight] ════════════════════════════════════════`);
-      console.error(`[aight]   📱 Pairing Code: ${code}`);
-      console.error(`[aight] ════════════════════════════════════════`);
-      console.error(
-        `[aight]   Enter this code in the Aight app to connect.`,
-      );
-      console.error(
-        `[aight]   Code expires in 5 minutes.\n`,
-      );
-
-      // Also show QR code with the relay pair URL for quick scanning
-      try {
-        const qrcode = require("qrcode-terminal");
-        const pairUrl = `${relayUrl}/pair?code=${code}`;
-        qrcode.generate(pairUrl, { small: true }, (qr: string) => {
-          for (const line of qr.split("\n")) {
-            console.error(`  ${line}`);
-          }
-          console.error("");
-        });
-      } catch {
-        // qrcode-terminal not available — code display is sufficient
-      }
-    },
-  });
-
-  await relay.start();
-} else {
-  // ═══════════════════════════════════════════════════════════════════════════
-  // LOCAL MODE — run WebSocket server on LAN
-  // ═══════════════════════════════════════════════════════════════════════════
-  console.error(`\n[aight] ⚡ Local mode — starting WebSocket server on port ${PORT}`);
-
-  type AppClient = {
-    ws: any;
-    id: string;
-    connectedAt: Date;
-  };
-
-  const clients = new Map<string, AppClient>();
-
-  const server = Bun.serve({
-    port: PORT,
-    hostname: "0.0.0.0",
-
-    async fetch(req, server) {
-      const url = new URL(req.url);
-
-      if (url.pathname === "/ws") {
-        const upgraded = server.upgrade(req, {
-          data: { id: `client_${Date.now()}` },
-        });
-        if (!upgraded) {
-          return new Response("WebSocket upgrade failed", { status: 400 });
+    try {
+      const qrcode = require("qrcode-terminal");
+      const pairUrl = `${relayUrl}/pair?code=${code}`;
+      qrcode.generate(pairUrl, { small: true }, (qr: string) => {
+        for (const line of qr.split("\n")) {
+          console.error(`  ${line}`);
         }
-        return undefined;
-      }
+        console.error("");
+      });
+    } catch {
+      // qrcode-terminal not available — code display is sufficient
+    }
+  },
+});
 
-      if (url.pathname === "/status") {
-        return Response.json({
-          ok: true,
-          name: "aight-channel",
-          version: "0.1.0",
-          mode: "local",
-          clients: clients.size,
-          uptime: process.uptime(),
-        });
-      }
-
-      return new Response(
-        `Aight Channel Plugin (local)\n\nWebSocket: ws://<ip>:${PORT}/ws\nStatus: /status\n`,
-        { headers: { "content-type": "text/plain" } },
-      );
-    },
-
-    websocket: {
-      open(ws) {
-        const id = (ws.data as any).id;
-        clients.set(id, { ws, id, connectedAt: new Date() });
-
-        // Register sender
-        senders.set(id, (data) => {
-          try {
-            ws.send(JSON.stringify(data));
-          } catch {
-            clients.delete(id);
-            senders.delete(id);
-          }
-        });
-
-        ws.send(
-          JSON.stringify({
-            type: "connected",
-            channelName: "aight",
-            timestamp: new Date().toISOString(),
-          }),
-        );
-        console.error(
-          `[aight] Client connected: ${id} (${clients.size} total)`,
-        );
-      },
-
-      async message(ws, message) {
-        try {
-          const data = JSON.parse(String(message));
-
-          await forwardToMCP(data);
-
-          if (data.type === "message") {
-            ws.send(
-              JSON.stringify({
-                type: "ack",
-                messageId: data.id,
-                timestamp: new Date().toISOString(),
-              }),
-            );
-            ws.send(
-              JSON.stringify({
-                type: "typing",
-                timestamp: new Date().toISOString(),
-              }),
-            );
-          }
-
-          if (data.type === "ping") {
-            ws.send(
-              JSON.stringify({
-                type: "pong",
-                timestamp: new Date().toISOString(),
-              }),
-            );
-          }
-        } catch {
-          ws.send(
-            JSON.stringify({
-              type: "error",
-              message: "Invalid message format. Expected JSON.",
-              timestamp: new Date().toISOString(),
-            }),
-          );
-        }
-      },
-
-      close(ws) {
-        const id = (ws.data as any).id;
-        clients.delete(id);
-        senders.delete(id);
-        console.error(
-          `[aight] Client disconnected: ${id} (${clients.size} total)`,
-        );
-      },
-    },
-  });
-
-  // Print connection info
-  const qrcode = require("qrcode-terminal");
-  const networkInterfaces = Object.values(
-    require("os").networkInterfaces(),
-  ).flat();
-  const lanIps = (networkInterfaces as any[])
-    .filter((i: any) => i && i.family === "IPv4" && !i.internal)
-    .map((i: any) => i.address);
-
-  console.error(`[aight] Local:  ws://localhost:${PORT}/ws`);
-  for (const ip of lanIps) {
-    console.error(`[aight] LAN:    ws://${ip}:${PORT}/ws`);
-  }
-  console.error(`[aight] Status: http://localhost:${PORT}/status`);
-
-  if (lanIps.length > 0) {
-    const wsUrl = `ws://${lanIps[0]}:${PORT}/ws`;
-    console.error(
-      `\n[aight] Scan this QR code in the Aight app to connect:\n`,
-    );
-    qrcode.generate(wsUrl, { small: true }, (code: string) => {
-      for (const line of code.split("\n")) {
-        console.error(`  ${line}`);
-      }
-      console.error("");
-    });
-  }
-}
+await relay.start();
