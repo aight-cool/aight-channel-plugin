@@ -1,77 +1,76 @@
-# Aight Channel Plugin — Phase 0 MVP
+# Aight Channel Plugin
 
-Chat with your Claude Code session from your phone over LAN.
-
-## Setup
-
-```bash
-# Install dependencies
-cd aight-channel-plugin
-bun install
-
-# Add to your .mcp.json (project or ~/.claude.json)
-# {
-#   "mcpServers": {
-#     "aight": { "command": "bun", "args": ["run", "/path/to/aight-channel-plugin/src/index.ts"] }
-#   }
-# }
-
-# Start Claude Code with the channel
-claude --dangerously-load-development-channels server:aight
-```
+Chat with your Claude Code session from your phone — works from anywhere.
 
 ## How it works
 
 ```
-Phone (Aight App)  ──WebSocket──>  Plugin (your Mac)  ──MCP/stdio──>  Claude Code
-     <──WebSocket──                   <──MCP/stdio──
+                        ┌─────────────────────────────┐
+Phone (Aight App)  ──WSS──►  Cloudflare Relay (DO)  ◄──WSS──  Plugin (your Mac)
+                        └─────────────────────────────┘
+                                    │
+                              Plugin ──MCP/stdio──► Claude Code
 ```
 
-1. Plugin starts a WebSocket server on port 8790 (configurable via `AIGHT_PORT`)
-2. Plugin listens on all interfaces (0.0.0.0) so your phone can connect over LAN
-3. Phone sends JSON messages → plugin forwards to Claude Code via MCP channel notification
-4. Claude replies via the `reply` tool → plugin sends JSON back over WebSocket
+**Relay mode** (default): Plugin connects outbound to Cloudflare Workers relay. No port forwarding, no Tailscale, no LAN requirement. A 6-digit pairing code links your phone.
+
+**Local mode** (`AIGHT_LOCAL=1`): Plugin runs a WebSocket server on your LAN. Direct connection, zero cloud.
+
+## Setup
+
+```bash
+cd aight-channel-plugin
+bun install
+```
+
+### Relay mode (recommended)
+```bash
+AIGHT_RELAY_URL=https://channels.aight.cool bun run src/index.ts
+```
+
+The plugin will:
+1. Create a relay room
+2. Display a **6-digit pairing code** in the terminal
+3. You enter the code in the Aight app → connected!
+
+### Local mode
+```bash
+AIGHT_LOCAL=1 bun run src/index.ts
+```
+
+Connect your phone to `ws://<your-mac-ip>:8792/ws` (or scan the QR code).
+
+## Environment Variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `AIGHT_RELAY_URL` | Relay server URL | _(none — local mode)_ |
+| `AIGHT_LOCAL` | Force local mode | `0` |
+| `AIGHT_PORT` | Local WebSocket port | `8792` |
 
 ## WebSocket Protocol
 
 ### App → Plugin
-
 ```json
-{
-  "type": "message",
-  "id": "msg_123",
-  "content": "what files are in my project?",
-  "sender": { "name": "Bruno", "device": "iPhone" }
-}
+{ "type": "message", "id": "msg_123", "content": "hello", "sender": { "name": "Bruno", "device": "iPhone" } }
 ```
 
 ### Plugin → App
-
 ```json
-// Connection established
 { "type": "connected", "channelName": "aight", "timestamp": "..." }
-
-// Message acknowledged
 { "type": "ack", "messageId": "msg_123", "timestamp": "..." }
-
-// Claude is thinking
 { "type": "typing", "timestamp": "..." }
-
-// Claude's reply
-{ "type": "reply", "id": "claude_1", "content": "Here are the files...", "replyTo": "msg_123", "timestamp": "..." }
-
-// Reaction
+{ "type": "reply", "id": "claude_1", "content": "Here's...", "replyTo": "msg_123", "timestamp": "..." }
 { "type": "reaction", "emoji": "👍", "messageId": "msg_123", "timestamp": "..." }
-
-// Ping/pong (keepalive)
-{ "type": "ping" } → { "type": "pong", "timestamp": "..." }
 ```
 
-## Endpoints
+## Relay
 
-- `ws://<ip>:8790/ws` — WebSocket connection for the app
-- `GET /status` — JSON health check (clients count, uptime)
+The relay lives in `relay/` — a Cloudflare Worker + Durable Objects. See [relay/DEPLOY.md](relay/DEPLOY.md) for setup.
 
-## Environment Variables
-
-- `AIGHT_PORT` — WebSocket server port (default: 8790)
+### Pairing flow
+1. Plugin: `POST /rooms` → `{ roomId, pairingCode, pluginToken, pluginWsUrl }`
+2. Plugin connects to `pluginWsUrl`
+3. App: `POST /pair { code }` → `{ roomId, appToken, appWsUrl }`
+4. App connects to `appWsUrl`
+5. Durable Object bridges the two WebSockets
