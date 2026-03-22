@@ -2,21 +2,20 @@
  * Relay Client — connects the plugin to the Cloudflare relay
  *
  * Flow:
- * 1. POST /rooms → get { roomId, pairingCode, pluginToken, pluginWsUrl }
- * 2. Connect to pluginWsUrl as "plugin" role
+ * 1. POST /pair → get { code, sessionToken, sessionId }
+ * 2. Connect to /ws/plugin?session=<token>&id=<sessionId>
  * 3. Display pairing code in terminal (+ QR code)
- * 4. App enters code → POST /pair → gets appWsUrl → connects
+ * 4. App enters code → connects to /ws/app?code=<code>
  * 5. Durable Object bridges the two WebSockets
  */
 
 const RECONNECT_DELAY_MS = 3000;
 const PING_INTERVAL_MS = 25000;
 
-export interface RelayRoom {
-  roomId: string;
-  pairingCode: string;
-  pluginToken: string;
-  pluginWsUrl: string;
+export interface RelaySession {
+  code: string;
+  sessionToken: string;
+  sessionId: string;
 }
 
 export interface RelayClientCallbacks {
@@ -37,7 +36,7 @@ export interface RelayClientCallbacks {
 
 export class RelayClient {
   private relayUrl: string;
-  private room: RelayRoom | null = null;
+  private session: RelaySession | null = null;
   private ws: WebSocket | null = null;
   private callbacks: RelayClientCallbacks;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
@@ -49,33 +48,33 @@ export class RelayClient {
     this.callbacks = callbacks;
   }
 
-  get roomInfo(): RelayRoom | null {
-    return this.room;
+  get sessionInfo(): RelaySession | null {
+    return this.session;
   }
 
   get pairingCode(): string | null {
-    return this.room?.pairingCode ?? null;
+    return this.session?.code ?? null;
   }
 
   async start(): Promise<void> {
     this.intentionalClose = false;
     this.callbacks.onStateChange("connecting");
 
-    // Create a room
+    // Request a pairing session from the relay
     try {
-      const res = await fetch(`${this.relayUrl}/rooms`, { method: "POST" });
+      const res = await fetch(`${this.relayUrl}/pair`, { method: "POST" });
       if (!res.ok) {
-        throw new Error(`Room creation failed: ${res.status}`);
+        throw new Error(`Pairing request failed: ${res.status}`);
       }
-      this.room = (await res.json()) as RelayRoom;
+      this.session = (await res.json()) as RelaySession;
       console.error(
-        `[aight-relay] Room created: ${this.room.roomId} | Code: ${this.room.pairingCode}`,
+        `[aight-relay] Session created: ${this.session.sessionId} | Code: ${this.session.code}`,
       );
 
       // Notify about pairing code
-      this.callbacks.onPairingCode(this.room.pairingCode, this.relayUrl);
+      this.callbacks.onPairingCode(this.session.code, this.relayUrl);
     } catch (err) {
-      console.error(`[aight-relay] Failed to create room: ${err}`);
+      console.error(`[aight-relay] Failed to create session: ${err}`);
       this.callbacks.onStateChange("error");
       this.scheduleReconnect();
       return;
@@ -85,13 +84,17 @@ export class RelayClient {
   }
 
   private connectWebSocket(): void {
-    if (!this.room) return;
+    if (!this.session) return;
 
     console.error(`[aight-relay] Connecting to relay...`);
     this.callbacks.onStateChange("connecting");
 
+    // Build the plugin WebSocket URL
+    const wsBase = this.relayUrl.replace(/^http/, "ws");
+    const wsUrl = `${wsBase}/ws/plugin?session=${encodeURIComponent(this.session.sessionToken)}&id=${encodeURIComponent(this.session.sessionId)}`;
+
     try {
-      this.ws = new WebSocket(this.room.pluginWsUrl);
+      this.ws = new WebSocket(wsUrl);
     } catch (err) {
       console.error(`[aight-relay] WebSocket creation failed: ${err}`);
       this.callbacks.onStateChange("error");
@@ -112,8 +115,13 @@ export class RelayClient {
         );
 
         // Relay control messages
-        if (data.type === "peer_connected" && data.role === "app") {
-          console.error(`[aight-relay] 📱 App connected via relay`);
+        if (data.type === "waiting_for_pair") {
+          console.error(`[aight-relay] ⏳ Waiting for app to pair...`);
+          return;
+        }
+
+        if (data.type === "paired") {
+          console.error(`[aight-relay] 📱 App paired successfully!`);
           // Send connection confirmation to app
           this.send({
             type: "connected",
@@ -123,8 +131,19 @@ export class RelayClient {
           return;
         }
 
-        if (data.type === "peer_disconnected" && data.role === "app") {
-          console.error(`[aight-relay] 📱 App disconnected from relay`);
+        if (data.type === "partner_connected") {
+          console.error(`[aight-relay] 📱 App connected`);
+          // Send connection confirmation to app
+          this.send({
+            type: "connected",
+            channelName: "aight",
+            timestamp: new Date().toISOString(),
+          });
+          return;
+        }
+
+        if (data.type === "partner_disconnected") {
+          console.error(`[aight-relay] 📱 App disconnected`);
           return;
         }
 
@@ -177,7 +196,7 @@ export class RelayClient {
   private scheduleReconnect(): void {
     if (this.intentionalClose) return;
     this.reconnectTimeout = setTimeout(() => {
-      if (this.room) {
+      if (this.session) {
         this.connectWebSocket();
       } else {
         this.start();
