@@ -12,9 +12,6 @@
  * across plugin restarts — no re-pairing needed.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
-import { dirname } from "path";
-
 const RECONNECT_DELAY_MS = 3000;
 const PING_INTERVAL_MS = 25000;
 
@@ -38,13 +35,6 @@ export interface RelayClientCallbacks {
   ) => void;
   /** Called when a pairing code is available for display */
   onPairingCode: (code: string, relayUrl: string) => void;
-  /** Called when successfully reconnected to a saved session (no re-pairing needed) */
-  onReconnected?: () => void;
-}
-
-export interface RelayClientOptions {
-  /** Path to save/load session state for persistence across restarts */
-  sessionFile?: string;
 }
 
 export class RelayClient {
@@ -52,19 +42,13 @@ export class RelayClient {
   private session: RelaySession | null = null;
   private ws: WebSocket | null = null;
   private callbacks: RelayClientCallbacks;
-  private options: RelayClientOptions;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
 
-  constructor(
-    relayUrl: string,
-    callbacks: RelayClientCallbacks,
-    options: RelayClientOptions = {},
-  ) {
+  constructor(relayUrl: string, callbacks: RelayClientCallbacks) {
     this.relayUrl = relayUrl.replace(/\/+$/, "");
     this.callbacks = callbacks;
-    this.options = options;
   }
 
   get sessionInfo(): RelaySession | null {
@@ -75,73 +59,9 @@ export class RelayClient {
     return this.session?.code ?? null;
   }
 
-  /** Save session to disk so we can reconnect after restart */
-  private saveSession(): void {
-    if (!this.options.sessionFile || !this.session) return;
-    try {
-      mkdirSync(dirname(this.options.sessionFile), { recursive: true });
-      writeFileSync(
-        this.options.sessionFile,
-        JSON.stringify(this.session),
-        "utf-8",
-      );
-      console.error(
-        `[aight-relay] Session saved to ${this.options.sessionFile}`,
-      );
-    } catch (err) {
-      console.error(`[aight-relay] Failed to save session: ${err}`);
-    }
-  }
-
-  /** Load a previously saved session from disk */
-  private loadSession(): RelaySession | null {
-    if (!this.options.sessionFile) return null;
-    try {
-      const data = readFileSync(this.options.sessionFile, "utf-8");
-      const session = JSON.parse(data) as RelaySession;
-      if (session.sessionToken && session.sessionId) {
-        console.error(
-          `[aight-relay] Loaded saved session: ${session.sessionId}`,
-        );
-        return session;
-      }
-    } catch {
-      // No saved session or invalid — that's fine
-    }
-    return null;
-  }
-
-  /** Delete saved session (e.g. when it's no longer valid) */
-  private clearSavedSession(): void {
-    if (!this.options.sessionFile) return;
-    try {
-      unlinkSync(this.options.sessionFile);
-    } catch {
-      // Already gone
-    }
-  }
-
   async start(): Promise<void> {
     this.intentionalClose = false;
     this.callbacks.onStateChange("connecting");
-
-    // Try to resume a saved session first
-    const saved = this.loadSession();
-    if (saved) {
-      this.session = saved;
-      console.error(
-        `[aight-relay] Attempting to reconnect to saved session ${saved.sessionId}...`,
-      );
-      this.connectWebSocket(true);
-      return;
-    }
-
-    // No saved session — create a new one
-    await this.createNewSession();
-  }
-
-  /** Create a brand new pairing session */
-  private async createNewSession(): Promise<void> {
     try {
       const res = await fetch(`${this.relayUrl}/pair`, { method: "POST" });
       if (!res.ok) {
@@ -152,9 +72,6 @@ export class RelayClient {
         `[aight-relay] Session created: ${this.session.sessionId} | Code: ${this.session.code}`,
       );
 
-      // Don't save yet — wait until the app actually pairs.
-      // Saving now would persist an unpaired session that can't receive messages.
-
       // Notify about pairing code
       this.callbacks.onPairingCode(this.session.code, this.relayUrl);
     } catch (err) {
@@ -164,22 +81,15 @@ export class RelayClient {
       return;
     }
 
-    this.connectWebSocket(false);
+    this.connectWebSocket();
   }
 
-  /**
-   * Connect WebSocket to the relay using the current session.
-   * @param isReconnect - true if resuming a saved session (will fall back to new session on failure)
-   */
-  private connectWebSocket(isReconnect: boolean): void {
+  private connectWebSocket(): void {
     if (!this.session) return;
 
-    console.error(
-      `[aight-relay] ${isReconnect ? "Reconnecting" : "Connecting"} to relay...`,
-    );
+    console.error(`[aight-relay] Connecting to relay...`);
     this.callbacks.onStateChange("connecting");
 
-    // Build the plugin WebSocket URL
     const wsBase = this.relayUrl.replace(/^http/, "ws");
     const wsUrl = `${wsBase}/ws/plugin?session=${encodeURIComponent(this.session.sessionToken)}&id=${encodeURIComponent(this.session.sessionId)}`;
 
@@ -187,32 +97,13 @@ export class RelayClient {
       this.ws = new WebSocket(wsUrl);
     } catch (err) {
       console.error(`[aight-relay] WebSocket creation failed: ${err}`);
-      if (isReconnect) {
-        console.error(
-          `[aight-relay] Saved session failed — creating new session`,
-        );
-        this.clearSavedSession();
-        this.session = null;
-        this.createNewSession();
-        return;
-      }
       this.callbacks.onStateChange("error");
       this.scheduleReconnect();
       return;
     }
 
-    let didConnect = false;
-
     this.ws.addEventListener("open", () => {
-      didConnect = true;
-      if (isReconnect) {
-        console.error(
-          `[aight-relay] ✅ Reconnected to saved session — no re-pairing needed`,
-        );
-        this.callbacks.onReconnected?.();
-      } else {
-        console.error(`[aight-relay] Connected to relay`);
-      }
+      console.error(`[aight-relay] Connected to relay`);
       this.callbacks.onStateChange("connected");
       this.startPing();
     });
@@ -231,8 +122,6 @@ export class RelayClient {
 
         if (data.type === "paired") {
           console.error(`[aight-relay] 📱 App paired successfully!`);
-          // NOW persist — the session is paired and worth reconnecting to
-          this.saveSession();
           this.send({
             type: "connected",
             channelName: "aight",
@@ -267,23 +156,11 @@ export class RelayClient {
 
     this.ws.addEventListener("close", () => {
       this.stopPing();
-      if (this.intentionalClose) return;
-
-      // If we never connected and this was a reconnect attempt,
-      // the saved session is dead — create a new one
-      if (!didConnect && isReconnect) {
-        console.error(
-          `[aight-relay] Saved session rejected — creating new session`,
-        );
-        this.clearSavedSession();
-        this.session = null;
-        this.createNewSession();
-        return;
+      if (!this.intentionalClose) {
+        console.error(`[aight-relay] Disconnected, reconnecting...`);
+        this.callbacks.onStateChange("disconnected");
+        this.scheduleReconnect();
       }
-
-      console.error(`[aight-relay] Disconnected, reconnecting...`);
-      this.callbacks.onStateChange("disconnected");
-      this.scheduleReconnect();
     });
 
     this.ws.addEventListener("error", () => {
@@ -318,11 +195,9 @@ export class RelayClient {
     if (this.intentionalClose) return;
     this.reconnectTimeout = setTimeout(() => {
       if (this.session) {
-        // Reconnect to existing session (not a saved-session reconnect,
-        // just a normal WS reconnect to the same session)
-        this.connectWebSocket(false);
+        this.connectWebSocket();
       } else {
-        this.createNewSession();
+        this.start();
       }
     }, RECONNECT_DELAY_MS);
   }

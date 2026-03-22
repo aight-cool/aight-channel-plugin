@@ -23,7 +23,8 @@ import { homedir } from "os";
 
 const RELAY_URL = process.env.AIGHT_RELAY_URL || "https://channels.aight.cool";
 const STATE_DIR = join(homedir(), ".claude", "channels", "aight");
-const SESSION_FILE = join(STATE_DIR, "relay-session.json");
+// No session persistence — each Claude instance gets its own relay session.
+// The DO expires after 30 min of inactivity anyway, making persistence unreliable.
 
 // Per-process pairing code file — avoids collisions when multiple
 // Claude Code sessions run simultaneously
@@ -270,33 +271,7 @@ const relay = new RelayClient(
       })
       .catch(() => {});
   },
-  onReconnected: () => {
-    process.stderr.write(
-      `\n[aight] ════════════════════════════════════════\n`,
-    );
-    process.stderr.write(
-      `[aight]   ✅ Reconnected to existing session\n`,
-    );
-    process.stderr.write(
-      `[aight]   App should connect automatically.\n`,
-    );
-    process.stderr.write(
-      `[aight] ════════════════════════════════════════\n\n`,
-    );
-
-    mcp
-      .notification({
-        method: "notifications/claude/channel",
-        params: {
-          content:
-            "📱 Aight channel reconnected to existing session — the app should connect automatically, no re-pairing needed.",
-          meta: { sender: "aight-plugin", device: "system" },
-        },
-      })
-      .catch(() => {});
   },
-  },
-  { sessionFile: SESSION_FILE },
 );
 
 await relay.start();
