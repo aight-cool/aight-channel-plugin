@@ -120,6 +120,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       id: msgId,
       replyTo: reply_to || null,
       content: text,
+      sender: {
+        id: "claude",
+        name: "Claude",
+        emoji: "🤖",
+        username: "claude",
+      },
       timestamp: new Date().toISOString(),
     };
 
