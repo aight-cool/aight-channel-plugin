@@ -1,7 +1,7 @@
 {
   "name": "aight-channel",
   "version": "0.0.1",
-  "description": "Aight mobile channel for Claude Code — chat with your session from your phone over LAN",
+  "description": "Aight mobile channel for Claude Code — chat with your session from your phone via cloud relay",
   "scripts": {
     "start": "bun run src/index.ts"
   },

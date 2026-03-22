@@ -1,0 +1,22 @@
+name = "channel-relay"
+main = "src/index.ts"
+account_id = "09385734b0e448260193c7f758a44d0b"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Durable Objects for stateful WebSocket rooms
+[[durable_objects.bindings]]
+name = "CHANNEL_ROOM"
+class_name = "ChannelRoom"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ChannelRoom"]
+
+# KV for pairing codes (code → roomId, 5-min TTL)
+[[kv_namespaces]]
+binding = "PAIRING_CODES"
+id = "TBD_AFTER_CREATE"
+
+# Secrets (set via `wrangler secret put`):
+# RELAY_AUTH_SECRET — HMAC key for token derivation

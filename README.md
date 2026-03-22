@@ -1,77 +1,88 @@
-# Aight Channel Plugin — Phase 0 MVP
+# Aight Channel Plugin
 
-Chat with your Claude Code session from your phone over LAN.
-
-## Setup
-
-```bash
-# Install dependencies
-cd aight-channel-plugin
-bun install
-
-# Add to your .mcp.json (project or ~/.claude.json)
-# {
-#   "mcpServers": {
-#     "aight": { "command": "bun", "args": ["run", "/path/to/aight-channel-plugin/src/index.ts"] }
-#   }
-# }
-
-# Start Claude Code with the channel
-claude --dangerously-load-development-channels server:aight
-```
+Chat with your Claude Code session from your phone — works from anywhere.
 
 ## How it works
 
 ```
-Phone (Aight App)  ──WebSocket──>  Plugin (your Mac)  ──MCP/stdio──>  Claude Code
-     <──WebSocket──                   <──MCP/stdio──
+                        ┌─────────────────────────────┐
+Phone (Aight App)  ──WSS──►  Cloudflare Relay (DO)  ◄──WSS──  Plugin (your Mac)
+                        └─────────────────────────────┘
+                                    │
+                              Plugin ──MCP/stdio──► Claude Code
 ```
 
-1. Plugin starts a WebSocket server on port 8790 (configurable via `AIGHT_PORT`)
-2. Plugin listens on all interfaces (0.0.0.0) so your phone can connect over LAN
-3. Phone sends JSON messages → plugin forwards to Claude Code via MCP channel notification
-4. Claude replies via the `reply` tool → plugin sends JSON back over WebSocket
+Plugin connects outbound to the Cloudflare Workers relay at `channels.aight.cool`. No port forwarding, no Tailscale, no LAN requirement. A 6-digit pairing code links your phone.
 
-## WebSocket Protocol
+## Setup
 
-### App → Plugin
-
-```json
-{
-  "type": "message",
-  "id": "msg_123",
-  "content": "what files are in my project?",
-  "sender": { "name": "Bruno", "device": "iPhone" }
-}
+```bash
+cd aight-channel-plugin
+bun install
 ```
 
-### Plugin → App
+### Usage
 
-```json
-// Connection established
-{ "type": "connected", "channelName": "aight", "timestamp": "..." }
-
-// Message acknowledged
-{ "type": "ack", "messageId": "msg_123", "timestamp": "..." }
-
-// Claude is thinking
-{ "type": "typing", "timestamp": "..." }
-
-// Claude's reply
-{ "type": "reply", "id": "claude_1", "content": "Here are the files...", "replyTo": "msg_123", "timestamp": "..." }
-
-// Reaction
-{ "type": "reaction", "emoji": "👍", "messageId": "msg_123", "timestamp": "..." }
-
-// Ping/pong (keepalive)
-{ "type": "ping" } → { "type": "pong", "timestamp": "..." }
+```bash
+# Load as a Claude Code channel plugin
+claude --dangerously-load-development-channels server:aight
 ```
 
-## Endpoints
+The plugin will:
+1. Connect to the relay at `channels.aight.cool`
+2. Display a **6-digit pairing code** in the terminal
+3. Enter the code in the Aight app → connected!
 
-- `ws://<ip>:8790/ws` — WebSocket connection for the app
-- `GET /status` — JSON health check (clients count, uptime)
+### Custom relay URL
+
+To use a self-hosted relay:
+
+```bash
+AIGHT_RELAY_URL=https://my-relay.example.com bun run src/index.ts
+```
 
 ## Environment Variables
 
-- `AIGHT_PORT` — WebSocket server port (default: 8790)
+| Variable | Description | Default |
+|---|---|---|
+| `AIGHT_RELAY_URL` | Relay server URL | `https://channels.aight.cool` |
+
+## WebSocket Protocol
+
+### App → Plugin (via relay)
+```json
+{ "type": "message", "id": "msg_123", "content": "hello", "sender": { "name": "Bruno", "device": "iPhone" } }
+```
+
+### Plugin → App (via relay)
+```json
+{ "type": "connected", "channelName": "aight", "timestamp": "..." }
+{ "type": "ack", "messageId": "msg_123", "timestamp": "..." }
+{ "type": "typing", "timestamp": "..." }
+{ "type": "reply", "id": "claude_1", "content": "Here's...", "replyTo": "msg_123", "timestamp": "..." }
+{ "type": "reaction", "emoji": "👍", "messageId": "msg_123", "timestamp": "..." }
+```
+
+### Relay control messages
+```json
+{ "type": "paired", "sessionToken": "..." }
+{ "type": "partner_connected", "timestamp": "..." }
+{ "type": "partner_disconnected", "timestamp": "..." }
+{ "type": "waiting_for_pair", "timestamp": "..." }
+{ "type": "reconnected", "partnerConnected": true, "timestamp": "..." }
+```
+
+## Pairing Flow
+
+1. Plugin calls `POST /pair` on the relay → gets `{ code, sessionToken, sessionId }`
+2. Plugin connects to `wss://channels.aight.cool/ws/plugin?session=<token>&id=<sessionId>`
+3. Plugin displays the 6-digit code in Claude Code terminal
+4. User enters code in Aight app
+5. App connects to `wss://channels.aight.cool/ws/app?code=<code>`
+6. Relay pairs the two, sends `{ type: "paired" }` to both
+7. Messages flow bidirectionally through the relay
+
+## Related
+
+- [aight-channel-relay](https://github.com/aight-cool/aight-channel-relay) — the Cloudflare Worker relay
+- [Aight](https://aight.cool) — the iOS app
