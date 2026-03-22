@@ -1,9 +1,11 @@
 {
   "name": "aight-channel",
-  "version": "0.0.1",
+  "version": "0.2.0",
   "description": "Aight mobile channel for Claude Code — chat with your session from your phone via cloud relay",
+  "type": "module",
+  "bin": "./src/index.ts",
   "scripts": {
-    "start": "bun run src/index.ts"
+    "start": "bun install --no-summary && bun src/index.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

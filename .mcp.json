@@ -2,7 +2,7 @@
   "mcpServers": {
     "aight": {
       "command": "bun",
-      "args": ["./src/index.ts"]
+      "args": ["run", "--cwd", "${CLAUDE_PLUGIN_ROOT}", "--shell=bun", "--silent", "start"]
     }
   }
 }
