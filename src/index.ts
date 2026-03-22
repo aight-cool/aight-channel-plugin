@@ -23,8 +23,11 @@ import { homedir } from "os";
 
 const RELAY_URL = process.env.AIGHT_RELAY_URL || "https://channels.aight.cool";
 const STATE_DIR = join(homedir(), ".claude", "channels", "aight");
-const CODE_FILE = join(STATE_DIR, "pairing-code.txt");
 const SESSION_FILE = join(STATE_DIR, "relay-session.json");
+
+// Per-process pairing code file — avoids collisions when multiple
+// Claude Code sessions run simultaneously
+const CODE_FILE = join(STATE_DIR, `pairing-code-${process.pid}.txt`);
 
 // ── Shared client tracking ──
 type SendFn = (data: object) => void;
@@ -172,6 +175,15 @@ async function forwardToMCP(data: {
     }
   }
 }
+
+// ── Cleanup PID-specific files on exit ──
+import { unlinkSync } from "fs";
+function cleanupOnExit() {
+  try { unlinkSync(CODE_FILE); } catch { /* already gone */ }
+}
+process.on("exit", cleanupOnExit);
+process.on("SIGINT", () => { cleanupOnExit(); process.exit(0); });
+process.on("SIGTERM", () => { cleanupOnExit(); process.exit(0); });
 
 // ── Connect to Claude Code over stdio ──
 const transport = new StdioServerTransport();
