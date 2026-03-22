@@ -135,7 +135,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     };
 
     const sent = broadcast(payload);
-    return { content: [{ type: "text", text: sentResult(sent, "reaction sent") }] };
+    return {
+      content: [{ type: "text", text: sentResult(sent, "reaction sent") }],
+    };
   }
 
   throw new Error(`Unknown tool: ${name}`);
@@ -210,20 +212,27 @@ const relay = new RelayClient(RELAY_URL, {
 
     // Surface connection state to Claude
     if (state === "error") {
-      mcp.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: "⚠️ Aight relay connection failed. Check that channels.aight.cool is reachable.",
-          meta: { sender: "aight-plugin", device: "system" },
-        },
-      }).catch(() => {});
+      mcp
+        .notification({
+          method: "notifications/claude/channel",
+          params: {
+            content:
+              "⚠️ Aight relay connection failed. Check that channels.aight.cool is reachable.",
+            meta: { sender: "aight-plugin", device: "system" },
+          },
+        })
+        .catch(() => {});
     }
   },
   onPairingCode: (code, relayUrl) => {
-    process.stderr.write(`\n[aight] ════════════════════════════════════════\n`);
+    process.stderr.write(
+      `\n[aight] ════════════════════════════════════════\n`,
+    );
     process.stderr.write(`[aight]   📱 Pairing Code: ${code}\n`);
     process.stderr.write(`[aight] ════════════════════════════════════════\n`);
-    process.stderr.write(`[aight]   Enter this code in the Aight app to connect.\n`);
+    process.stderr.write(
+      `[aight]   Enter this code in the Aight app to connect.\n`,
+    );
     process.stderr.write(`[aight]   Code expires in 5 minutes.\n\n`);
 
     // Write code to file so it's always accessible
@@ -236,13 +245,15 @@ const relay = new RelayClient(RELAY_URL, {
     }
 
     // Send pairing code via MCP notification so Claude can display it
-    mcp.notification({
-      method: "notifications/claude/channel",
-      params: {
-        content: `📱 Aight Pairing Code: ${code} — enter this in the Aight app to connect (expires in 5 min)`,
-        meta: { sender: "aight-plugin", device: "system" },
-      },
-    }).catch(() => {});
+    mcp
+      .notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: `📱 Aight Pairing Code: ${code} — enter this in the Aight app to connect (expires in 5 min)`,
+          meta: { sender: "aight-plugin", device: "system" },
+        },
+      })
+      .catch(() => {});
   },
 });
 
