@@ -150,8 +150,8 @@ export class RelayClient {
         `[aight-relay] Session created: ${this.session.sessionId} | Code: ${this.session.code}`,
       );
 
-      // Persist the session for future restarts
-      this.saveSession();
+      // Don't save yet — wait until the app actually pairs.
+      // Saving now would persist an unpaired session that can't receive messages.
 
       // Notify about pairing code
       this.callbacks.onPairingCode(this.session.code, this.relayUrl);
@@ -222,6 +222,8 @@ export class RelayClient {
 
         if (data.type === "paired") {
           console.error(`[aight-relay] 📱 App paired successfully!`);
+          // NOW persist — the session is paired and worth reconnecting to
+          this.saveSession();
           this.send({
             type: "connected",
             channelName: "aight",
