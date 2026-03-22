@@ -17,7 +17,13 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { RelayClient } from "./relay-client";
 
+import { writeFileSync, mkdirSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
+
 const RELAY_URL = process.env.AIGHT_RELAY_URL || "https://channels.aight.cool";
+const STATE_DIR = join(homedir(), ".claude", "channels", "aight");
+const CODE_FILE = join(STATE_DIR, "pairing-code.txt");
 
 // ── Shared client tracking ──
 type SendFn = (data: object) => void;
@@ -214,35 +220,29 @@ const relay = new RelayClient(RELAY_URL, {
     }
   },
   onPairingCode: (code, relayUrl) => {
-    console.error(`\n[aight] ════════════════════════════════════════`);
-    console.error(`[aight]   📱 Pairing Code: ${code}`);
-    console.error(`[aight] ════════════════════════════════════════`);
-    console.error(`[aight]   Enter this code in the Aight app to connect.`);
-    console.error(`[aight]   Code expires in 5 minutes.\n`);
+    process.stderr.write(`\n[aight] ════════════════════════════════════════\n`);
+    process.stderr.write(`[aight]   📱 Pairing Code: ${code}\n`);
+    process.stderr.write(`[aight] ════════════════════════════════════════\n`);
+    process.stderr.write(`[aight]   Enter this code in the Aight app to connect.\n`);
+    process.stderr.write(`[aight]   Code expires in 5 minutes.\n\n`);
+
+    // Write code to file so it's always accessible
+    try {
+      mkdirSync(STATE_DIR, { recursive: true });
+      writeFileSync(CODE_FILE, `${code}\n`);
+      process.stderr.write(`[aight]   Code also written to: ${CODE_FILE}\n\n`);
+    } catch (err) {
+      process.stderr.write(`[aight] ⚠️  Failed to write code file: ${err}\n`);
+    }
 
     // Send pairing code via MCP notification so Claude can display it
     mcp.notification({
       method: "notifications/claude/channel",
       params: {
-        content: `📱 **Aight Pairing Code: ${code}**\n\nEnter this 6-digit code in the Aight app to connect.\nCode expires in 5 minutes.`,
+        content: `📱 Aight Pairing Code: ${code} — enter this in the Aight app to connect (expires in 5 min)`,
         meta: { sender: "aight-plugin", device: "system" },
       },
-    }).catch((err) => {
-      console.error(`[aight] ❌ Failed to send pairing code via MCP: ${err}`);
-    });
-
-    try {
-      const qrcode = require("qrcode-terminal");
-      const pairUrl = `${relayUrl}/pair?code=${code}`;
-      qrcode.generate(pairUrl, { small: true }, (qr: string) => {
-        for (const line of qr.split("\n")) {
-          console.error(`  ${line}`);
-        }
-        console.error("");
-      });
-    } catch {
-      // qrcode-terminal not available — code display is sufficient
-    }
+    }).catch(() => {});
   },
 });
 
