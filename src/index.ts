@@ -201,6 +201,17 @@ const relay = new RelayClient(RELAY_URL, {
     } else {
       senders.delete("relay");
     }
+
+    // Surface connection state to Claude
+    if (state === "error") {
+      mcp.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: "⚠️ Aight relay connection failed. Check that channels.aight.cool is reachable.",
+          meta: { sender: "aight-plugin", device: "system" },
+        },
+      }).catch(() => {});
+    }
   },
   onPairingCode: (code, relayUrl) => {
     console.error(`\n[aight] ════════════════════════════════════════`);
@@ -208,6 +219,17 @@ const relay = new RelayClient(RELAY_URL, {
     console.error(`[aight] ════════════════════════════════════════`);
     console.error(`[aight]   Enter this code in the Aight app to connect.`);
     console.error(`[aight]   Code expires in 5 minutes.\n`);
+
+    // Send pairing code via MCP notification so Claude can display it
+    mcp.notification({
+      method: "notifications/claude/channel",
+      params: {
+        content: `📱 **Aight Pairing Code: ${code}**\n\nEnter this 6-digit code in the Aight app to connect.\nCode expires in 5 minutes.`,
+        meta: { sender: "aight-plugin", device: "system" },
+      },
+    }).catch((err) => {
+      console.error(`[aight] ❌ Failed to send pairing code via MCP: ${err}`);
+    });
 
     try {
       const qrcode = require("qrcode-terminal");
