@@ -90,8 +90,10 @@ export class RelayClient {
     console.error(`[aight-relay] Connecting to relay...`);
     this.callbacks.onStateChange("connecting");
 
+    // Connect with only the session ID in the URL — token sent as first WS message
+    // (H3: tokens should not appear in URLs where they get logged)
     const wsBase = this.relayUrl.replace(/^http/, "ws");
-    const wsUrl = `${wsBase}/ws/plugin?session=${encodeURIComponent(this.session.sessionToken)}&id=${encodeURIComponent(this.session.sessionId)}`;
+    const wsUrl = `${wsBase}/ws/plugin?id=${encodeURIComponent(this.session.sessionId)}`;
 
     try {
       this.ws = new WebSocket(wsUrl);
@@ -103,7 +105,14 @@ export class RelayClient {
     }
 
     this.ws.addEventListener("open", () => {
-      console.error(`[aight-relay] Connected to relay`);
+      console.error(`[aight-relay] WebSocket open, authenticating...`);
+      // Send token as first message instead of in URL (security: H3)
+      this.ws!.send(
+        JSON.stringify({
+          type: "auth",
+          token: this.session!.sessionToken,
+        }),
+      );
       this.callbacks.onStateChange("connected");
       this.startPing();
     });
