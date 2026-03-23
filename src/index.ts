@@ -16,6 +16,7 @@ import {
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { RelayClient } from "./relay-client";
+import { discoverSkills } from "./skills";
 
 import { writeFileSync, mkdirSync, readFileSync, readdirSync, unlinkSync, statSync } from "fs";
 import { join, extname, basename } from "path";
@@ -364,6 +365,26 @@ const relay = new RelayClient(
   RELAY_URL,
   {
   onMessage: async (data) => {
+    // Send skills list when the app pairs or reconnects
+    if (data.type === "paired" || data.type === "partner_connected") {
+      relay.send({
+        type: "skills_list",
+        skills: discoverSkills(),
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    // Respond to on-demand skills requests (don't forward to MCP)
+    if (data.type === "request_skills") {
+      relay.send({
+        type: "skills_list",
+        skills: discoverSkills(),
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
     await forwardToMCP(data);
 
     if (data.type === "message" && data.id) {

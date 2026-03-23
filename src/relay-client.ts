@@ -136,6 +136,8 @@ export class RelayClient {
             channelName: "aight",
             timestamp: new Date().toISOString(),
           });
+          // Forward to onMessage so index.ts can send skills_list
+          this.callbacks.onMessage(data);
           return;
         }
 
@@ -146,6 +148,8 @@ export class RelayClient {
             channelName: "aight",
             timestamp: new Date().toISOString(),
           });
+          // Forward to onMessage so index.ts can send skills_list
+          this.callbacks.onMessage(data);
           return;
         }
 
