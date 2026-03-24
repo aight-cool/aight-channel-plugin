@@ -279,9 +279,11 @@ cleanStalePidFiles(STATE_DIR, process.pid);
 cleanInbox(INBOX_DIR, LIMITS.MAX_INBOX_SIZE);
 
 // ── Hook event HTTP server ──
-const hookServer = Bun.serve({
-  port: HOOK_PORT,
-  hostname: "127.0.0.1",
+function startHookServer(port: number): ReturnType<typeof Bun.serve> {
+  try {
+    return Bun.serve({
+      port,
+      hostname: "127.0.0.1",
   async fetch(req) {
     if (req.method === "POST" && new URL(req.url).pathname === "/hook-event") {
       try {
@@ -326,8 +328,17 @@ const hookServer = Bun.serve({
     }
     return new Response("Not found", { status: 404 });
   },
-});
+    });
+  } catch (err) {
+    if (port !== 0 && (err as NodeJS.ErrnoException).code === "EADDRINUSE") {
+      console.error(`[aight] Port ${port} in use, falling back to auto-assign`);
+      return startHookServer(0);
+    }
+    throw err;
+  }
+}
 
+const hookServer = startHookServer(HOOK_PORT);
 const hookPort = hookServer.port;
 writeFileSync(join(STATE_DIR, `hook-port-${process.pid}.txt`), String(hookPort), {
   mode: 0o600,
