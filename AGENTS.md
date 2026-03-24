@@ -5,9 +5,22 @@ Claude Code channel plugin — chat with your session from your phone via cloud 
 ## Architecture
 
 ```
-Phone (Aight App)  ──WSS──►  Cloudflare Relay (DO)  ◄──WSS──  Plugin (your Mac)
-                                      │
-                                Plugin ──MCP/stdio──► Claude Code
+┌──────────────┐    stdio     ┌──────────────────┐
+│  Claude Code │◄────────────►│ Aight Channel    │
+│  (laptop)    │              │ Plugin (MCP)     │
+└──────────────┘              └────────┬─────────┘
+                                       │ WSS
+                                       ▼
+                              ┌──────────────────┐
+                              │  Channel Relay   │
+                              │  (Cloudflare)    │
+                              └────────┬─────────┘
+                                       │ WSS
+                                       ▼
+                              ┌──────────────────┐
+                              │  Aight App       │
+                              │  (iPhone)        │
+                              └──────────────────┘
 ```
 
 The plugin connects **outbound** to the relay at `channels.aight.cool`. No port forwarding,

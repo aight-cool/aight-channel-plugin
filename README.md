@@ -3,9 +3,22 @@
 Chat with your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) session from your phone — works from anywhere.
 
 ```
-Phone (Aight App)  ──WSS──►  Cloudflare Relay  ◄──WSS──  Plugin (your Mac)
-                                    │
-                              Plugin ──MCP/stdio──► Claude Code
+┌──────────────┐    stdio     ┌──────────────────┐
+│  Claude Code │◄────────────►│ Aight Channel    │
+│  (laptop)    │              │ Plugin (MCP)     │
+└──────────────┘              └────────┬─────────┘
+                                       │ WSS
+                                       ▼
+                              ┌──────────────────┐
+                              │  Channel Relay   │
+                              │  (Cloudflare)    │
+                              └────────┬─────────┘
+                                       │ WSS
+                                       ▼
+                              ┌──────────────────┐
+                              │  Aight App       │
+                              │  (iPhone)        │
+                              └──────────────────┘
 ```
 
 No port forwarding, no Tailscale, no LAN requirement. A 6-digit pairing code links your phone.
