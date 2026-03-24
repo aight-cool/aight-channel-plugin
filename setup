@@ -43,7 +43,7 @@ echo -e "${GREEN}Dependencies installed.${NC}"
 # Writes tool event hooks to ~/.claude/settings.local.json so Claude Code
 # sends tool events to the aight plugin. Uses a fixed port + path so the
 # config is stable across restarts (no chicken-and-egg problem).
-SETTINGS_FILE="$HOME/.claude/settings.local.json"
+SETTINGS_FILE="$HOME/.claude/settings.json"
 mkdir -p "$HOME/.claude"
 
 configure_hooks() {
