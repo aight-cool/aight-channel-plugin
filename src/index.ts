@@ -33,11 +33,18 @@ import { writeFileSync, mkdirSync, readFileSync, unlinkSync, statSync } from "fs
 import { join, extname, basename } from "path";
 import { homedir } from "os";
 
+import { randomBytes } from "crypto";
+
 const RELAY_URL = process.env.AIGHT_RELAY_URL || "https://channels.aight.cool";
 const STATE_DIR = join(homedir(), ".claude", "channels", "aight");
 const INBOX_DIR = join(STATE_DIR, "inbox");
 const HOOK_PORT = parseInt(process.env.AIGHT_HOOK_PORT || "0", 10);
 const CODE_FILE = join(STATE_DIR, `pairing-code-${process.pid}.txt`);
+
+// Per-instance secret prevents tool events from other sessions leaking in.
+// Hooks are project-scoped in Claude Code, so without this, ANY session
+// in the same project would send its tool events to our hook server.
+const HOOK_SECRET = randomBytes(16).toString("hex");
 
 // Ensure state directories exist once at startup
 mkdirSync(INBOX_DIR, { recursive: true });
@@ -257,7 +264,11 @@ async function forwardToMCP(data: InboundMessage): Promise<void> {
 }
 
 // ── Cleanup PID-specific files on exit ──
-const PID_FILES = [CODE_FILE, join(STATE_DIR, `hook-port-${process.pid}.txt`)];
+const PID_FILES = [
+  CODE_FILE,
+  join(STATE_DIR, `hook-port-${process.pid}.txt`),
+  join(STATE_DIR, `hook-url-${process.pid}.txt`),
+];
 
 function cleanupOnExit() {
   for (const f of PID_FILES) {
@@ -285,7 +296,8 @@ function startHookServer(port: number): ReturnType<typeof Bun.serve> {
       port,
       hostname: "127.0.0.1",
   async fetch(req) {
-    if (req.method === "POST" && new URL(req.url).pathname === "/hook-event") {
+    const url = new URL(req.url);
+    if (req.method === "POST" && url.pathname === `/hook-event/${HOOK_SECRET}`) {
       try {
         const event = (await req.json()) as Record<string, unknown>;
         const hookEvent = event.hook_event_name as string | undefined;
@@ -340,13 +352,19 @@ function startHookServer(port: number): ReturnType<typeof Bun.serve> {
 
 const hookServer = startHookServer(HOOK_PORT);
 const hookPort = hookServer.port;
+const hookUrl = `http://127.0.0.1:${hookPort}/hook-event/${HOOK_SECRET}`;
+
 writeFileSync(join(STATE_DIR, `hook-port-${process.pid}.txt`), String(hookPort), {
   mode: 0o600,
 });
-console.error(`[aight] Hook server listening on http://127.0.0.1:${hookPort}/hook-event`);
+// Write full hook URL (with secret) so Claude Code can configure hooks dynamically
+writeFileSync(join(STATE_DIR, `hook-url-${process.pid}.txt`), hookUrl, {
+  mode: 0o600,
+});
+console.error(`[aight] Hook server listening on ${hookUrl}`);
 console.error(`[aight] Configure hooks in .claude/settings.json:`);
 console.error(
-  `[aight]   "hooks": { "PreToolUse": [{ "type": "http", "url": "http://127.0.0.1:${hookPort}/hook-event" }], "PostToolUse": [{ "type": "http", "url": "http://127.0.0.1:${hookPort}/hook-event" }] }`,
+  `[aight]   "hooks": { "PreToolUse": [{ "type": "http", "url": "${hookUrl}" }], "PostToolUse": [{ "type": "http", "url": "${hookUrl}" }] }`,
 );
 
 // ── Connect to Claude Code over stdio ──

@@ -54,7 +54,7 @@ export function cleanStalePidFiles(stateDir: string, ownPid: number): void {
   try {
     const files = readdirSync(stateDir);
     for (const f of files) {
-      const pidMatch = f.match(/^(?:pairing-code|hook-port)-(\d+)\.txt$/);
+      const pidMatch = f.match(/^(?:pairing-code|hook-port|hook-url)-(\d+)\.txt$/);
       if (!pidMatch) continue;
 
       const pid = parseInt(pidMatch[1]!, 10);

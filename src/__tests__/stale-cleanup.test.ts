@@ -29,14 +29,17 @@ describe("cleanStalePidFiles", () => {
     expect(remaining).not.toContain(deadFile);
   });
 
-  it("removes hook-port files for dead PIDs", () => {
-    const deadFile = `hook-port-99999999.txt`;
-    writeFileSync(join(testDir, deadFile), "12345");
+  it("removes hook-port and hook-url files for dead PIDs", () => {
+    const deadPort = `hook-port-99999999.txt`;
+    const deadUrl = `hook-url-99999999.txt`;
+    writeFileSync(join(testDir, deadPort), "12345");
+    writeFileSync(join(testDir, deadUrl), "http://127.0.0.1:12345/hook-event/abc123");
 
     cleanStalePidFiles(testDir, process.pid);
 
     const remaining = readdirSync(testDir);
-    expect(remaining).not.toContain(deadFile);
+    expect(remaining).not.toContain(deadPort);
+    expect(remaining).not.toContain(deadUrl);
   });
 
   it("ignores non-PID files", () => {
