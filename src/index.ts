@@ -28,6 +28,7 @@ import {
   mapSubagentEvent,
   summarizeToolInput,
   getLiveInstancePorts,
+  getPortForSession,
 } from "./utils";
 
 import { writeFileSync, mkdirSync, readFileSync, unlinkSync, statSync } from "fs";
@@ -263,7 +264,8 @@ async function forwardToMCP(data: InboundMessage): Promise<void> {
 }
 
 // ── Cleanup PID-specific files on exit ──
-const PID_FILES = [CODE_FILE, join(STATE_DIR, `hook-port-${process.pid}.txt`)];
+const SESSION_FILE = join(STATE_DIR, `session-${process.pid}.txt`);
+const PID_FILES = [CODE_FILE, join(STATE_DIR, `hook-port-${process.pid}.txt`), SESSION_FILE];
 
 function cleanupOnExit() {
   for (const f of PID_FILES) {
@@ -285,21 +287,44 @@ cleanStalePidFiles(STATE_DIR, process.pid);
 cleanInbox(INBOX_DIR, LIMITS.MAX_INBOX_SIZE);
 
 // ── Hook event HTTP server ──
-// Each instance starts its own hook listener on an auto-assigned port.
-// Additionally, the first instance to grab the well-known port (7891) acts
-// as a fan-out proxy: it reads all live instance ports from STATE_DIR and
-// forwards incoming hook events to each one. This way the hooks config
-// (written once by `setup`) points to a single stable URL, but all
-// instances receive tool events.
+// Each instance learns its own session_id from the first hook event it
+// receives (Claude Code includes session_id in every hook payload).
+// After that, it only processes events matching its session_id.
+//
+// Architecture:
+// - Each instance listens on its own auto-assigned port
+// - The first instance to grab port 7891 acts as fan-out proxy
+// - The proxy forwards ALL events to ALL instances
+// - Each instance filters by its own session_id locally
+//
+// This gives us: stable hook URL + multi-session support + no cross-leak.
 
-/** Process a hook event and broadcast to relay */
+let ownSessionId: string | null = null;
+
+/** Process a hook event — only broadcasts if session matches ours */
 function handleHookEvent(event: Record<string, unknown>): void {
   const hookEvent = event.hook_event_name as string | undefined;
+  const sessionId = event.session_id as string | undefined;
   const toolName = event.tool_name as string | undefined;
   const toolInput = event.tool_input as Record<string, unknown> | undefined;
   const toolResult = event.tool_result as unknown;
 
-  if (!hookEvent) return;
+  if (!hookEvent || !sessionId) return;
+
+  // Claim our session_id: first event we process, we own that session.
+  // The fan-out proxy routes known sessions directly to the right instance
+  // and only fans out unknown sessions. So the first unknown-session event
+  // we receive is ours.
+  if (!ownSessionId) {
+    ownSessionId = sessionId;
+    try {
+      writeFileSync(SESSION_FILE, sessionId, { mode: 0o600 });
+    } catch {}
+    console.error(`[aight] Claimed session: ${ownSessionId}`);
+  }
+
+  // Ignore events from other sessions
+  if (sessionId !== ownSessionId) return;
 
   const mapped = mapHookEvent(hookEvent);
   if (mapped) {
@@ -321,7 +346,7 @@ function handleHookEvent(event: Record<string, unknown>): void {
       type: "tool_event",
       event: subagentMapped,
       tool: "SubAgent",
-      input: (event.session_id as string) || "",
+      input: sessionId,
       timestamp: new Date().toISOString(),
     });
   }
@@ -364,13 +389,29 @@ try {
           return Response.json({ error: "Invalid body" }, { status: 400 });
         }
 
-        // Fan out to all live instance ports (including ourselves)
-        const ports = getLiveInstancePorts(STATE_DIR, process.pid);
-        ports.push(instanceHookPort); // always include self
-        const unique = [...new Set(ports)];
+        // Route by session_id: if we know which instance owns this session,
+        // send only to that instance. Otherwise fan out to all (the recipient
+        // will claim the session on first receipt).
+        let parsed: Record<string, unknown> | undefined;
+        try { parsed = JSON.parse(body); } catch {}
+        const eventSessionId = parsed?.session_id as string | undefined;
+
+        let targetPorts: number[];
+        const knownPort = eventSessionId
+          ? getPortForSession(STATE_DIR, eventSessionId)
+          : null;
+
+        if (knownPort) {
+          targetPorts = [knownPort];
+        } else {
+          // Fan out to all — first unclaimed instance will claim it
+          const ports = getLiveInstancePorts(STATE_DIR, process.pid);
+          ports.push(instanceHookPort);
+          targetPorts = [...new Set(ports)];
+        }
 
         await Promise.allSettled(
-          unique.map((port) =>
+          targetPorts.map((port) =>
             fetch(`http://127.0.0.1:${port}${AIGHT_HOOK_PATH}`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -384,7 +425,7 @@ try {
       return new Response("Not found", { status: 404 });
     },
   });
-  console.error(`[aight] Hook proxy listening on http://127.0.0.1:${AIGHT_HOOK_PORT}${AIGHT_HOOK_PATH} (fan-out to all instances)`);
+  console.error(`[aight] Hook proxy on port ${AIGHT_HOOK_PORT} (fan-out to all instances)`);
 } catch {
   console.error(`[aight] Hook proxy skipped (port ${AIGHT_HOOK_PORT} owned by another instance)`);
 }

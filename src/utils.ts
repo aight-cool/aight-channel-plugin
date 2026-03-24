@@ -54,7 +54,7 @@ export function cleanStalePidFiles(stateDir: string, ownPid: number): void {
   try {
     const files = readdirSync(stateDir);
     for (const f of files) {
-      const pidMatch = f.match(/^(?:pairing-code|hook-port)-(\d+)\.txt$/);
+      const pidMatch = f.match(/^(?:pairing-code|hook-port|session)-(\d+)\.txt$/);
       if (!pidMatch) continue;
 
       const pid = parseInt(pidMatch[1]!, 10);
@@ -189,4 +189,38 @@ export function getLiveInstancePorts(stateDir: string, ownPid: number): number[]
     // state dir doesn't exist
   }
   return ports;
+}
+
+/** Find the instance port that owns a given session_id */
+export function getPortForSession(stateDir: string, sessionId: string): number | null {
+  try {
+    for (const f of readdirSync(stateDir)) {
+      const match = f.match(/^session-(\d+)\.txt$/);
+      if (!match) continue;
+      const pid = parseInt(match[1]!, 10);
+
+      try {
+        process.kill(pid, 0); // alive?
+      } catch {
+        continue;
+      }
+
+      try {
+        const sid = readFileSync(join(stateDir, f), "utf-8").trim();
+        if (sid === sessionId) {
+          // Found the instance — read its port
+          try {
+            return parseInt(readFileSync(join(stateDir, `hook-port-${pid}.txt`), "utf-8").trim(), 10);
+          } catch {
+            return null;
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    // state dir doesn't exist
+  }
+  return null;
 }
