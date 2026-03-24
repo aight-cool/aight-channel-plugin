@@ -1,7 +1,7 @@
 {
   "name": "aight",
   "description": "Aight mobile channel for Claude Code — chat with your session from your phone via cloud relay. Pair with a 6-digit code, no port forwarding needed.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "keywords": [
     "aight",
     "mobile",

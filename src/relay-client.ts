@@ -1,38 +1,33 @@
 /**
- * Relay Client — connects the plugin to the Cloudflare relay
+ * Relay Client — connects the plugin to the Cloudflare relay.
  *
  * Flow:
- * 1. Try to load a saved session from disk and reconnect
- * 2. If no saved session (or reconnect fails), POST /pair → new session
- * 3. Connect to /ws/plugin?session=<token>&id=<sessionId>
+ * 1. POST /pair → new session with pairing code
+ * 2. Connect to /ws/plugin?id=<sessionId>
+ * 3. Send auth token as first WS message (H3: no tokens in URLs)
  * 4. Display pairing code in terminal
  * 5. App enters code → connects, messages flow
- *
- * Session persistence ensures the app's saved token stays valid
- * across plugin restarts — no re-pairing needed.
  */
 
-const RECONNECT_DELAY_MS = 3000;
-const PING_INTERVAL_MS = 25000;
+import {
+  type InboundMessage,
+  type RelaySession,
+  type OutboundMessage,
+  LIMITS,
+  parseInboundMessage,
+} from "./protocol";
 
-export interface RelaySession {
-  code: string;
-  sessionToken: string;
-  sessionId: string;
-}
+const BASE_RECONNECT_MS = 3_000;
+const MAX_RECONNECT_MS = 60_000;
+const PING_INTERVAL_MS = 25_000;
+
+export type ConnectionState = "connecting" | "connected" | "disconnected" | "error";
 
 export interface RelayClientCallbacks {
-  /** Called when a message arrives from the app (via relay) */
-  onMessage: (data: {
-    type: string;
-    id?: string;
-    content?: string;
-    sender?: { name?: string; device?: string };
-  }) => void;
+  /** Called when a validated message arrives from the app or relay */
+  onMessage: (data: InboundMessage) => void;
   /** Called when connection state changes */
-  onStateChange: (
-    state: "connecting" | "connected" | "disconnected" | "error",
-  ) => void;
+  onStateChange: (state: ConnectionState) => void;
   /** Called when a pairing code is available for display */
   onPairingCode: (code: string, relayUrl: string) => void;
 }
@@ -44,6 +39,7 @@ export class RelayClient {
   private callbacks: RelayClientCallbacks;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempt = 0;
   private intentionalClose = false;
 
   constructor(relayUrl: string, callbacks: RelayClientCallbacks) {
@@ -55,12 +51,9 @@ export class RelayClient {
     return this.session;
   }
 
-  get pairingCode(): string | null {
-    return this.session?.code ?? null;
-  }
-
   async start(): Promise<void> {
     this.intentionalClose = false;
+    this.reconnectAttempt = 0;
     this.callbacks.onStateChange("connecting");
     try {
       const res = await fetch(`${this.relayUrl}/pair`, { method: "POST" });
@@ -71,8 +64,6 @@ export class RelayClient {
       console.error(
         `[aight-relay] Session created: ${this.session.sessionId} | Code: ${this.session.code}`,
       );
-
-      // Notify about pairing code
       this.callbacks.onPairingCode(this.session.code, this.relayUrl);
     } catch (err) {
       console.error(`[aight-relay] Failed to create session: ${err}`);
@@ -84,14 +75,21 @@ export class RelayClient {
     this.connectWebSocket();
   }
 
+  private closeExistingSocket(): void {
+    if (this.ws) {
+      try { this.ws.close(); } catch { /* already closed */ }
+      this.ws = null;
+    }
+  }
+
   private connectWebSocket(): void {
     if (!this.session) return;
+
+    this.closeExistingSocket();
 
     console.error(`[aight-relay] Connecting to relay...`);
     this.callbacks.onStateChange("connecting");
 
-    // Connect with only the session ID in the URL — token sent as first WS message
-    // (H3: tokens should not appear in URLs where they get logged)
     const wsBase = this.relayUrl.replace(/^http/, "ws");
     const wsUrl = `${wsBase}/ws/plugin?id=${encodeURIComponent(this.session.sessionId)}`;
 
@@ -106,65 +104,67 @@ export class RelayClient {
 
     this.ws.addEventListener("open", () => {
       console.error(`[aight-relay] WebSocket open, authenticating...`);
-      // Send token as first message instead of in URL (security: H3)
+      // H3: send token as first message, not in URL
       this.ws!.send(
         JSON.stringify({
           type: "auth",
           token: this.session!.sessionToken,
-        }),
+        } satisfies OutboundMessage),
       );
       this.callbacks.onStateChange("connected");
+      this.reconnectAttempt = 0;
       this.startPing();
     });
 
     this.ws.addEventListener("message", (event) => {
-      try {
-        const data = JSON.parse(
-          typeof event.data === "string" ? event.data : "",
+      const raw = typeof event.data === "string" ? event.data : "";
+
+      if (raw.length > LIMITS.MAX_MESSAGE_SIZE) {
+        console.error(
+          `[aight-relay] Rejected oversized message: ${raw.length} bytes (max ${LIMITS.MAX_MESSAGE_SIZE})`,
         );
-
-        // Relay control messages
-        if (data.type === "waiting_for_pair") {
-          console.error(`[aight-relay] ⏳ Waiting for app to pair...`);
-          return;
-        }
-
-        if (data.type === "paired") {
-          console.error(`[aight-relay] 📱 App paired successfully!`);
-          this.send({
-            type: "connected",
-            channelName: "aight",
-            timestamp: new Date().toISOString(),
-          });
-          // Forward to onMessage so index.ts can send skills_list
-          this.callbacks.onMessage(data);
-          return;
-        }
-
-        if (data.type === "partner_connected") {
-          console.error(`[aight-relay] 📱 App connected`);
-          this.send({
-            type: "connected",
-            channelName: "aight",
-            timestamp: new Date().toISOString(),
-          });
-          // Forward to onMessage so index.ts can send skills_list
-          this.callbacks.onMessage(data);
-          return;
-        }
-
-        if (data.type === "partner_disconnected") {
-          console.error(`[aight-relay] 📱 App disconnected`);
-          return;
-        }
-
-        if (data.type === "pong") return;
-
-        // Forward app messages (message, ping) to the MCP handler
-        this.callbacks.onMessage(data);
-      } catch {
-        // Ignore malformed
+        return;
       }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        console.error("[aight-relay] Received malformed JSON, ignoring");
+        return;
+      }
+
+      const msg = parseInboundMessage(parsed);
+      if (!msg) {
+        console.error(`[aight-relay] Received unknown or invalid message type: ${(parsed as Record<string, unknown>)?.type}`);
+        return;
+      }
+
+      if (msg.type === "waiting_for_pair") {
+        console.error(`[aight-relay] Waiting for app to pair...`);
+        return;
+      }
+
+      // Paired / reconnected — notify app we're connected
+      if (msg.type === "paired" || msg.type === "partner_connected") {
+        console.error(`[aight-relay] ${msg.type === "paired" ? "App paired successfully!" : "App connected"}`);
+        this.send({
+          type: "connected",
+          channelName: "aight",
+          timestamp: new Date().toISOString(),
+        });
+        this.callbacks.onMessage(msg);
+        return;
+      }
+
+      if (msg.type === "partner_disconnected") {
+        console.error(`[aight-relay] App disconnected`);
+        return;
+      }
+
+      if (msg.type === "pong") return;
+
+      this.callbacks.onMessage(msg);
     });
 
     this.ws.addEventListener("close", () => {
@@ -177,12 +177,11 @@ export class RelayClient {
     });
 
     this.ws.addEventListener("error", () => {
-      // onclose fires after
+      // onclose fires after onerror — reconnection handled there
     });
   }
 
-  /** Send a message to the app via relay */
-  send(data: object): boolean {
+  send(data: OutboundMessage): boolean {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(data));
       return true;
@@ -197,29 +196,41 @@ export class RelayClient {
       clearTimeout(this.reconnectTimeout);
       this.reconnectTimeout = null;
     }
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
+    this.closeExistingSocket();
     this.callbacks.onStateChange("disconnected");
+  }
+
+  /** Exponential backoff: min(3s * 2^attempt, 60s) + random jitter */
+  private getReconnectDelay(): number {
+    const exponential = Math.min(
+      BASE_RECONNECT_MS * Math.pow(2, this.reconnectAttempt),
+      MAX_RECONNECT_MS,
+    );
+    const jitter = Math.random() * 1000;
+    return exponential + jitter;
   }
 
   private scheduleReconnect(): void {
     if (this.intentionalClose) return;
+    const delay = this.getReconnectDelay();
+    this.reconnectAttempt++;
+    console.error(
+      `[aight-relay] Reconnecting in ${Math.round(delay / 1000)}s (attempt ${this.reconnectAttempt})`,
+    );
     this.reconnectTimeout = setTimeout(() => {
       if (this.session) {
         this.connectWebSocket();
       } else {
         this.start();
       }
-    }, RECONNECT_DELAY_MS);
+    }, delay);
   }
 
   private startPing(): void {
     this.stopPing();
     this.pingInterval = setInterval(() => {
       if (this.ws?.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: "ping" }));
+        this.ws.send(JSON.stringify({ type: "ping" } satisfies OutboundMessage));
       }
     }, PING_INTERVAL_MS);
   }

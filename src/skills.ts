@@ -27,15 +27,15 @@ function parseFrontmatter(
   const match = content.match(/^---\s*\n([\s\S]*?)\n---/);
   if (!match) return null;
 
-  const block = match[1];
+  const block = match[1]!;
   const nameMatch = block.match(/^name:\s*(.+)$/m);
   const descMatch = block.match(/^description:\s*(.+)$/m);
 
-  if (!nameMatch) return null;
+  if (!nameMatch?.[1]) return null;
 
   return {
     name: nameMatch[1].trim(),
-    description: descMatch ? descMatch[1].trim() : "",
+    description: descMatch?.[1]?.trim() ?? "",
   };
 }
 

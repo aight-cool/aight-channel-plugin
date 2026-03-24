@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Aight Channel Plugin — Setup Script
+# Installs dependencies and creates a shell alias for easy launching.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ALIAS_NAME="claude-aight"
+ALIAS_CMD="claude --dangerously-load-development-channels server:aight"
+
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+echo ""
+echo -e "${BOLD}aight${NC} — Claude Code mobile channel plugin"
+echo ""
+
+# ── Check for bun ──
+if ! command -v bun &>/dev/null; then
+  echo -e "${RED}Error:${NC} bun is required but not installed."
+  echo ""
+  echo "  Install bun:"
+  echo "    curl -fsSL https://bun.sh/install | bash"
+  echo ""
+  exit 1
+fi
+
+# ── Install dependencies ──
+echo -e "${YELLOW}Installing dependencies...${NC}"
+cd "$SCRIPT_DIR"
+bun install --no-summary
+echo -e "${GREEN}Dependencies installed.${NC}"
+
+# ── Add shell alias ──
+SHELL_NAME="$(basename "$SHELL")"
+ADDED_ALIAS=false
+
+add_alias() {
+  local rc_file="$1"
+  local alias_line="alias ${ALIAS_NAME}='${ALIAS_CMD}'"
+
+  if [ -f "$rc_file" ] && grep -qF "$ALIAS_NAME" "$rc_file"; then
+    echo -e "  Alias ${BOLD}${ALIAS_NAME}${NC} already exists in ${rc_file}"
+    return
+  fi
+
+  echo "" >> "$rc_file"
+  echo "# aight — Claude Code mobile channel" >> "$rc_file"
+  echo "$alias_line" >> "$rc_file"
+  echo -e "  ${GREEN}Added alias${NC} ${BOLD}${ALIAS_NAME}${NC} to ${rc_file}"
+  ADDED_ALIAS=true
+}
+
+case "$SHELL_NAME" in
+  zsh)
+    add_alias "$HOME/.zshrc"
+    ;;
+  bash)
+    if [ -f "$HOME/.bash_profile" ]; then
+      add_alias "$HOME/.bash_profile"
+    else
+      add_alias "$HOME/.bashrc"
+    fi
+    ;;
+  *)
+    echo -e "  ${YELLOW}Unknown shell ($SHELL_NAME).${NC} Add this alias manually:"
+    echo ""
+    echo "    alias ${ALIAS_NAME}='${ALIAS_CMD}'"
+    echo ""
+    ;;
+esac
+
+# ── Done ──
+echo ""
+echo -e "${GREEN}${BOLD}Setup complete!${NC}"
+echo ""
+
+if [ "$ADDED_ALIAS" = true ]; then
+  echo -e "  Restart your shell (or run ${BOLD}source ~/.${SHELL_NAME}rc${NC}), then:"
+else
+  echo "  Run:"
+fi
+
+echo ""
+echo -e "    ${BOLD}${ALIAS_NAME}${NC}"
+echo ""
+echo "  A 6-digit pairing code will appear. Enter it in the Aight app."
+echo ""
