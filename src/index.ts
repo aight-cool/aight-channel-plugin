@@ -41,17 +41,13 @@ const STATE_DIR = join(homedir(), ".claude", "channels", "aight");
 const INBOX_DIR = join(STATE_DIR, "inbox");
 const CODE_FILE = join(STATE_DIR, `pairing-code-${process.pid}.txt`);
 
-// Fixed hook port + path. Written once by `setup` to ~/.claude/settings.local.json
-// so the config exists before Claude Code starts. No chicken-and-egg problem.
 const AIGHT_HOOK_PORT = 7891;
 const AIGHT_HOOK_PATH = "/aight-hook";
 
-// Ensure state directories exist once at startup
 mkdirSync(INBOX_DIR, { recursive: true });
 
 const rateLimiter = createRateLimiter();
 
-// ── Shared client tracking ──
 type SendFn = (data: object) => void;
 const senders: Map<string, SendFn> = new Map();
 let messageCounter = 0;
@@ -76,7 +72,6 @@ function sentResult(sent: number, verb = "sent"): string {
     : "no clients connected";
 }
 
-// ── MCP Server ──
 const mcp = new Server(
   { name: "aight", version: "0.3.0" },
   {
@@ -88,7 +83,6 @@ const mcp = new Server(
   },
 );
 
-// ── Tools: reply + react ──
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
@@ -186,8 +180,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   throw new Error(`Unknown tool: ${name}`);
 });
 
-// ── Attachment helpers ──
-
 function saveAttachment(att: InboundAttachment): string {
   const ts = Date.now();
   const safeName = sanitizeFileName(att.fileName);
@@ -219,7 +211,6 @@ function readFileAsBase64(filePath: string): { data: string; mimeType: string } 
   }
 }
 
-// ── Forward a message from the app to Claude via MCP ──
 async function forwardToMCP(data: InboundMessage): Promise<void> {
   if (data.type !== "message") return;
 
@@ -263,7 +254,6 @@ async function forwardToMCP(data: InboundMessage): Promise<void> {
   }
 }
 
-// ── Cleanup PID-specific files on exit ──
 const SESSION_FILE = join(STATE_DIR, `session-${process.pid}.txt`);
 const PID_FILES = [CODE_FILE, join(STATE_DIR, `hook-port-${process.pid}.txt`), SESSION_FILE];
 
@@ -282,26 +272,10 @@ process.on("exit", cleanupOnExit);
 process.on("SIGINT", () => { cleanupOnExit(); process.exit(0); });
 process.on("SIGTERM", () => { cleanupOnExit(); process.exit(0); });
 
-// ── Startup cleanup ──
 cleanStalePidFiles(STATE_DIR, process.pid);
 cleanInbox(INBOX_DIR, LIMITS.MAX_INBOX_SIZE);
 
-// ── Hook event HTTP server ──
-// Each instance learns its own session_id from the first hook event it
-// receives (Claude Code includes session_id in every hook payload).
-// After that, it only processes events matching its session_id.
-//
-// Architecture:
-// - Each instance listens on its own auto-assigned port
-// - The first instance to grab port 7891 acts as fan-out proxy
-// - The proxy forwards ALL events to ALL instances
-// - Each instance filters by its own session_id locally
-//
-// This gives us: stable hook URL + multi-session support + no cross-leak.
-
 let ownSessionId: string | null = null;
-
-/** Process a hook event — only broadcasts if session matches ours */
 function handleHookEvent(event: Record<string, unknown>): void {
   const hookEvent = event.hook_event_name as string | undefined;
   const sessionId = event.session_id as string | undefined;
@@ -319,7 +293,9 @@ function handleHookEvent(event: Record<string, unknown>): void {
     ownSessionId = sessionId;
     try {
       writeFileSync(SESSION_FILE, sessionId, { mode: 0o600 });
-    } catch {}
+    } catch (err) {
+      console.error(`[aight] Failed to write session file: ${err}`);
+    }
     console.error(`[aight] Claimed session: ${ownSessionId}`);
   }
 
@@ -375,7 +351,10 @@ writeFileSync(join(STATE_DIR, `hook-port-${process.pid}.txt`), String(instanceHo
   mode: 0o600,
 });
 
-// Try to own the well-known port (7891) as the fan-out proxy
+// The first instance to grab port 7891 acts as fan-out proxy.
+// It caches session→port mappings to avoid disk I/O on every hook event.
+const sessionPortCache = new Map<string, number>();
+
 try {
   Bun.serve({
     port: AIGHT_HOOK_PORT,
@@ -389,54 +368,71 @@ try {
           return Response.json({ error: "Invalid body" }, { status: 400 });
         }
 
-        // Route by session_id: if we know which instance owns this session,
-        // send only to that instance. Otherwise fan out to all (the recipient
-        // will claim the session on first receipt).
-        let parsed: Record<string, unknown> | undefined;
-        try { parsed = JSON.parse(body); } catch {}
-        const eventSessionId = parsed?.session_id as string | undefined;
-
-        let targetPorts: number[];
-        const knownPort = eventSessionId
-          ? getPortForSession(STATE_DIR, eventSessionId)
-          : null;
-
-        if (knownPort) {
-          targetPorts = [knownPort];
-        } else {
-          // Fan out to all — first unclaimed instance will claim it
-          const ports = getLiveInstancePorts(STATE_DIR, process.pid);
-          ports.push(instanceHookPort);
-          targetPorts = [...new Set(ports)];
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          return Response.json({ error: "Invalid JSON" }, { status: 400 });
         }
 
-        await Promise.allSettled(
+        const eventSessionId = parsed.session_id as string | undefined;
+
+        // Route: check cache first, then disk, then fan-out
+        let targetPorts: number[];
+        const cached = eventSessionId ? sessionPortCache.get(eventSessionId) : undefined;
+
+        if (cached) {
+          targetPorts = [cached];
+        } else if (eventSessionId) {
+          const diskPort = getPortForSession(STATE_DIR, eventSessionId);
+          if (diskPort) {
+            sessionPortCache.set(eventSessionId, diskPort);
+            targetPorts = [diskPort];
+          } else {
+            const ports = getLiveInstancePorts(STATE_DIR, process.pid);
+            ports.push(instanceHookPort);
+            targetPorts = [...new Set(ports)];
+          }
+        } else {
+          targetPorts = [instanceHookPort];
+        }
+
+        const results = await Promise.allSettled(
           targetPorts.map((port) =>
             fetch(`http://127.0.0.1:${port}${AIGHT_HOOK_PATH}`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body,
-            }).catch(() => {})
+            }),
           ),
         );
+
+        // Self-healing: remove dead ports from cache and disk
+        for (let i = 0; i < results.length; i++) {
+          if (results[i]!.status === "rejected") {
+            const deadPort = targetPorts[i]!;
+            // Invalidate cache entries pointing to this port
+            for (const [sid, port] of sessionPortCache) {
+              if (port === deadPort) sessionPortCache.delete(sid);
+            }
+          }
+        }
 
         return Response.json({ ok: true });
       }
       return new Response("Not found", { status: 404 });
     },
   });
-  console.error(`[aight] Hook proxy on port ${AIGHT_HOOK_PORT} (fan-out to all instances)`);
+  console.error(`[aight] Hook proxy on port ${AIGHT_HOOK_PORT}`);
 } catch {
   console.error(`[aight] Hook proxy skipped (port ${AIGHT_HOOK_PORT} owned by another instance)`);
 }
 
 console.error(`[aight] Instance hook listener on port ${instanceHookPort}`);
 
-// ── Connect to Claude Code over stdio ──
 const transport = new StdioServerTransport();
 await mcp.connect(transport);
 
-// ── Connect to relay ──
 console.error(`\n[aight] Connecting to relay at ${RELAY_URL}`);
 
 function sendSkillsList() {

@@ -6,8 +6,6 @@ import { readdirSync, readFileSync, unlinkSync, statSync } from "fs";
 import { join } from "path";
 import { LIMITS } from "./protocol";
 
-// ── MIME types ──
-
 export const MIME_MAP: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -20,13 +18,9 @@ export const MIME_MAP: Record<string, string> = {
   ".json": "application/json",
 };
 
-// ── Filename sanitization ──
-
 export function sanitizeFileName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
-
-// ── Rate limiter ──
 
 export interface RateLimiter {
   allow(now?: number): boolean;
@@ -48,16 +42,55 @@ export function createRateLimiter(
   };
 }
 
-// ── Stale PID file cleanup ──
+/** Info about a live plugin instance discovered from PID-tagged files */
+interface LivePidFile {
+  pid: number;
+  fileName: string;
+  filePath: string;
+}
+
+/**
+ * Iterate PID-tagged files in stateDir, yielding only those whose
+ * process is still alive. Handles the common pattern of:
+ * readdirSync → regex match → process.kill(pid, 0) → yield
+ */
+function forEachLivePidFile(
+  stateDir: string,
+  pattern: RegExp,
+  ownPid?: number,
+): LivePidFile[] {
+  const results: LivePidFile[] = [];
+  try {
+    for (const f of readdirSync(stateDir)) {
+      const match = f.match(pattern);
+      if (!match) continue;
+      const pid = parseInt(match[1]!, 10);
+      if (ownPid !== undefined && pid === ownPid) continue;
+
+      let alive = false;
+      try {
+        process.kill(pid, 0);
+        alive = true;
+      } catch {}
+
+      if (alive) {
+        results.push({ pid, fileName: f, filePath: join(stateDir, f) });
+      }
+    }
+  } catch {
+    // stateDir doesn't exist
+  }
+  return results;
+}
+
+const STALE_PID_PATTERN = /^(?:pairing-code|hook-port|session)-(\d+)\.txt$/;
 
 export function cleanStalePidFiles(stateDir: string, ownPid: number): void {
   try {
-    const files = readdirSync(stateDir);
-    for (const f of files) {
-      const pidMatch = f.match(/^(?:pairing-code|hook-port|session)-(\d+)\.txt$/);
-      if (!pidMatch) continue;
-
-      const pid = parseInt(pidMatch[1]!, 10);
+    for (const f of readdirSync(stateDir)) {
+      const match = f.match(STALE_PID_PATTERN);
+      if (!match) continue;
+      const pid = parseInt(match[1]!, 10);
       if (pid === ownPid) continue;
 
       try {
@@ -65,20 +98,16 @@ export function cleanStalePidFiles(stateDir: string, ownPid: number): void {
       } catch {
         try {
           unlinkSync(join(stateDir, f));
-          console.error(
-            `[aight] Cleaned stale file: ${f} (PID ${pid} no longer running)`,
-          );
+          console.error(`[aight] Cleaned stale file: ${f} (PID ${pid} no longer running)`);
         } catch (err) {
           console.error(`[aight] Failed to clean stale file ${f}: ${err}`);
         }
       }
     }
   } catch {
-    // STATE_DIR doesn't exist yet
+    // stateDir doesn't exist
   }
 }
-
-// ── Inbox cleanup ──
 
 export function cleanInbox(inboxDir: string, maxSize: number): void {
   try {
@@ -120,8 +149,6 @@ export function cleanInbox(inboxDir: string, maxSize: number): void {
   }
 }
 
-// ── Hook event mapping ──
-
 const HOOK_EVENT_MAP: Record<string, "start" | "end" | "error"> = {
   PreToolUse: "start",
   PostToolUse: "end",
@@ -141,8 +168,6 @@ export function mapSubagentEvent(hookEvent: string): "subagent_start" | "subagen
   return SUBAGENT_EVENT_MAP[hookEvent];
 }
 
-// ── Tool input summarization ──
-
 const FILE_PATH_TOOLS = new Set(["Read", "Edit", "Write"]);
 
 export function summarizeToolInput(
@@ -159,68 +184,39 @@ export function summarizeToolInput(
   return JSON.stringify(toolInput).slice(0, 200);
 }
 
-// ── Live instance port discovery ──
+const HOOK_PORT_PATTERN = /^hook-port-(\d+)\.txt$/;
 
 /** Read hook-port-{pid}.txt files for all live plugin instances */
 export function getLiveInstancePorts(stateDir: string, ownPid: number): number[] {
   const ports: number[] = [];
-  try {
-    for (const f of readdirSync(stateDir)) {
-      const match = f.match(/^hook-port-(\d+)\.txt$/);
-      if (!match) continue;
-      const pid = parseInt(match[1]!, 10);
-      if (pid === ownPid) continue;
-
-      // Check if process is alive
-      try {
-        process.kill(pid, 0);
-      } catch {
-        continue;
-      }
-
-      try {
-        const port = parseInt(readFileSync(join(stateDir, f), "utf-8").trim(), 10);
-        if (port > 0) ports.push(port);
-      } catch {
-        continue;
-      }
+  for (const { filePath } of forEachLivePidFile(stateDir, HOOK_PORT_PATTERN, ownPid)) {
+    try {
+      const port = parseInt(readFileSync(filePath, "utf-8").trim(), 10);
+      if (port > 0) ports.push(port);
+    } catch {
+      continue;
     }
-  } catch {
-    // state dir doesn't exist
   }
   return ports;
 }
 
+const SESSION_PATTERN = /^session-(\d+)\.txt$/;
+
 /** Find the instance port that owns a given session_id */
 export function getPortForSession(stateDir: string, sessionId: string): number | null {
-  try {
-    for (const f of readdirSync(stateDir)) {
-      const match = f.match(/^session-(\d+)\.txt$/);
-      if (!match) continue;
-      const pid = parseInt(match[1]!, 10);
-
-      try {
-        process.kill(pid, 0); // alive?
-      } catch {
-        continue;
-      }
-
-      try {
-        const sid = readFileSync(join(stateDir, f), "utf-8").trim();
-        if (sid === sessionId) {
-          // Found the instance — read its port
-          try {
-            return parseInt(readFileSync(join(stateDir, `hook-port-${pid}.txt`), "utf-8").trim(), 10);
-          } catch {
-            return null;
-          }
+  for (const { pid, filePath } of forEachLivePidFile(stateDir, SESSION_PATTERN)) {
+    try {
+      const sid = readFileSync(filePath, "utf-8").trim();
+      if (sid === sessionId) {
+        try {
+          return parseInt(readFileSync(join(stateDir, `hook-port-${pid}.txt`), "utf-8").trim(), 10);
+        } catch {
+          return null;
         }
-      } catch {
-        continue;
       }
+    } catch {
+      continue;
     }
-  } catch {
-    // state dir doesn't exist
   }
   return null;
 }
