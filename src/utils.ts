@@ -2,7 +2,7 @@
  * Shared utilities used by the plugin and testable in isolation.
  */
 
-import { readdirSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, statSync } from "fs";
+import { readdirSync, unlinkSync, statSync } from "fs";
 import { join } from "path";
 import { LIMITS } from "./protocol";
 
@@ -54,7 +54,7 @@ export function cleanStalePidFiles(stateDir: string, ownPid: number): void {
   try {
     const files = readdirSync(stateDir);
     for (const f of files) {
-      const pidMatch = f.match(/^(?:pairing-code|hook-port|hook-url)-(\d+)\.txt$/);
+      const pidMatch = f.match(/^pairing-code-(\d+)\.txt$/);
       if (!pidMatch) continue;
 
       const pid = parseInt(pidMatch[1]!, 10);
@@ -159,94 +159,3 @@ export function summarizeToolInput(
   return JSON.stringify(toolInput).slice(0, 200);
 }
 
-// ── Project hooks auto-configuration ──
-
-/**
- * Collect hook URLs from all live plugin instances, then write them
- * into the project's .claude/settings.local.json hooks config.
- *
- * Each instance writes its own hook-url-{pid}.txt on startup.
- * This function reads all such files, prunes dead PIDs, and writes
- * a hooks config that fans out to every live instance.
- */
-export function configureProjectHooks(stateDir: string): void {
-  const urls: string[] = [];
-
-  try {
-    for (const f of readdirSync(stateDir)) {
-      const match = f.match(/^hook-url-(\d+)\.txt$/);
-      if (!match) continue;
-      const pid = parseInt(match[1]!, 10);
-
-      // Check if process is alive
-      try {
-        process.kill(pid, 0);
-      } catch {
-        continue; // dead process, skip
-      }
-
-      try {
-        const url = readFileSync(join(stateDir, f), "utf-8").trim();
-        if (url) urls.push(url);
-      } catch {
-        continue;
-      }
-    }
-  } catch {
-    return; // state dir doesn't exist
-  }
-
-  if (urls.length === 0) return;
-
-  // Build hooks entries — one per live instance
-  const hookEntries = urls.map((url) => ({
-    type: "http",
-    url,
-    timeout: 5,
-  }));
-
-  const hookConfig = {
-    matcher: ".*",
-    hooks: hookEntries,
-  };
-
-  // Write hooks to user-level settings (~/.claude/settings.local.json).
-  // Project-level won't work because the plugin's cwd is the plugin dir,
-  // not the user's project. User-level hooks apply to all sessions.
-  const settingsDir = join(require("os").homedir(), ".claude");
-  const settingsPath = join(settingsDir, "settings.local.json");
-
-  let settings: Record<string, unknown> = {};
-  try {
-    settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-  } catch {
-    // doesn't exist or invalid — start fresh
-  }
-
-  const hooks = (settings.hooks ?? {}) as Record<string, unknown>;
-
-  // Replace aight hook entries, preserve non-aight hooks
-  for (const event of ["PreToolUse", "PostToolUse", "PostToolUseFailure"]) {
-    const existing = (hooks[event] ?? []) as Array<Record<string, unknown>>;
-    // Remove old aight hook entries (identified by /hook-event/ in URL)
-    const nonAight = existing.filter((entry) => {
-      const entryHooks = (entry.hooks ?? []) as Array<Record<string, unknown>>;
-      return !entryHooks.some(
-        (h) => typeof h.url === "string" && h.url.includes("/hook-event/"),
-      );
-    });
-    hooks[event] = [...nonAight, hookConfig];
-  }
-
-  settings.hooks = hooks;
-
-  try {
-    mkdirSync(settingsDir, { recursive: true });
-    writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", {
-      mode: 0o600,
-    });
-    console.error(`[aight] Configured hooks for ${urls.length} active session(s)`);
-  } catch (err) {
-    console.error(`[aight] Failed to write hooks config: ${err}`);
-  }
-}

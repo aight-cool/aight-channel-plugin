@@ -27,7 +27,6 @@ import {
   mapHookEvent,
   mapSubagentEvent,
   summarizeToolInput,
-  configureProjectHooks,
 } from "./utils";
 
 import { writeFileSync, mkdirSync, readFileSync, unlinkSync, statSync } from "fs";
@@ -38,13 +37,12 @@ import { homedir } from "os";
 const RELAY_URL = process.env.AIGHT_RELAY_URL || "https://channels.aight.cool";
 const STATE_DIR = join(homedir(), ".claude", "channels", "aight");
 const INBOX_DIR = join(STATE_DIR, "inbox");
-const HOOK_PORT = parseInt(process.env.AIGHT_HOOK_PORT || "0", 10);
 const CODE_FILE = join(STATE_DIR, `pairing-code-${process.pid}.txt`);
 
-// Per-instance hook path prevents tool events from other sessions leaking in.
-// Each instance gets its own path based on PID — hooks are configured to
-// fan out to all live instances, and each only accepts its own path.
-const HOOK_PATH = `/hook-event/${process.pid}`;
+// Fixed hook port + path. Written once by `setup` to ~/.claude/settings.local.json
+// so the config exists before Claude Code starts. No chicken-and-egg problem.
+const AIGHT_HOOK_PORT = 7891;
+const AIGHT_HOOK_PATH = "/aight-hook";
 
 // Ensure state directories exist once at startup
 mkdirSync(INBOX_DIR, { recursive: true });
@@ -264,11 +262,7 @@ async function forwardToMCP(data: InboundMessage): Promise<void> {
 }
 
 // ── Cleanup PID-specific files on exit ──
-const PID_FILES = [
-  CODE_FILE,
-  join(STATE_DIR, `hook-port-${process.pid}.txt`),
-  join(STATE_DIR, `hook-url-${process.pid}.txt`),
-];
+const PID_FILES = [CODE_FILE];
 
 function cleanupOnExit() {
   for (const f of PID_FILES) {
@@ -290,84 +284,66 @@ cleanStalePidFiles(STATE_DIR, process.pid);
 cleanInbox(INBOX_DIR, LIMITS.MAX_INBOX_SIZE);
 
 // ── Hook event HTTP server ──
-function startHookServer(port: number): ReturnType<typeof Bun.serve> {
-  try {
-    return Bun.serve({
-      port,
-      hostname: "127.0.0.1",
-  async fetch(req) {
-    const url = new URL(req.url);
-    if (req.method === "POST" && url.pathname === HOOK_PATH) {
-      try {
-        const event = (await req.json()) as Record<string, unknown>;
-        const hookEvent = event.hook_event_name as string | undefined;
-        const toolName = event.tool_name as string | undefined;
-        const toolInput = event.tool_input as Record<string, unknown> | undefined;
-        const toolResult = event.tool_result as unknown;
+// Uses a fixed port + path so the hooks config can be written once by `setup`
+// and never needs to change. If the port is already taken (another aight instance
+// owns it), this instance skips the hook server — tool events still reach the
+// phone through whichever instance owns the port.
+let hookServerActive = false;
+try {
+  Bun.serve({
+    port: AIGHT_HOOK_PORT,
+    hostname: "127.0.0.1",
+    async fetch(req) {
+      const url = new URL(req.url);
+      if (req.method === "POST" && url.pathname === AIGHT_HOOK_PATH) {
+        try {
+          const event = (await req.json()) as Record<string, unknown>;
+          const hookEvent = event.hook_event_name as string | undefined;
+          const toolName = event.tool_name as string | undefined;
+          const toolInput = event.tool_input as Record<string, unknown> | undefined;
+          const toolResult = event.tool_result as unknown;
 
-        if (hookEvent) {
-          const mapped = mapHookEvent(hookEvent);
-          if (mapped) {
-            broadcast({
-              type: "tool_event",
-              event: mapped,
-              tool: toolName || "unknown",
-              input: summarizeToolInput(toolName, toolInput),
-              ...(mapped === "error" && toolResult
-                ? { error: String(toolResult).slice(0, 200) }
-                : {}),
-              timestamp: new Date().toISOString(),
-            });
+          if (hookEvent) {
+            const mapped = mapHookEvent(hookEvent);
+            if (mapped) {
+              broadcast({
+                type: "tool_event",
+                event: mapped,
+                tool: toolName || "unknown",
+                input: summarizeToolInput(toolName, toolInput),
+                ...(mapped === "error" && toolResult
+                  ? { error: String(toolResult).slice(0, 200) }
+                  : {}),
+                timestamp: new Date().toISOString(),
+              });
+            }
+
+            const subagentMapped = mapSubagentEvent(hookEvent);
+            if (subagentMapped) {
+              broadcast({
+                type: "tool_event",
+                event: subagentMapped,
+                tool: "SubAgent",
+                input: (event.session_id as string) || "",
+                timestamp: new Date().toISOString(),
+              });
+            }
           }
 
-          const subagentMapped = mapSubagentEvent(hookEvent);
-          if (subagentMapped) {
-            broadcast({
-              type: "tool_event",
-              event: subagentMapped,
-              tool: "SubAgent",
-              input: (event.session_id as string) || "",
-              timestamp: new Date().toISOString(),
-            });
-          }
+          return Response.json({ ok: true });
+        } catch (err) {
+          console.error(`[aight] Hook event parse error: ${err}`);
+          return Response.json({ error: "Invalid JSON" }, { status: 400 });
         }
-
-        return Response.json({ ok: true });
-      } catch (err) {
-        console.error(`[aight] Hook event parse error: ${err}`);
-        return Response.json({ error: "Invalid JSON" }, { status: 400 });
       }
-    }
-    return new Response("Not found", { status: 404 });
-  },
-    });
-  } catch (err) {
-    if (port !== 0 && (err as NodeJS.ErrnoException).code === "EADDRINUSE") {
-      console.error(`[aight] Port ${port} in use, falling back to auto-assign`);
-      return startHookServer(0);
-    }
-    throw err;
-  }
+      return new Response("Not found", { status: 404 });
+    },
+  });
+  hookServerActive = true;
+  console.error(`[aight] Hook server listening on http://127.0.0.1:${AIGHT_HOOK_PORT}${AIGHT_HOOK_PATH}`);
+} catch {
+  console.error(`[aight] Hook server skipped (port ${AIGHT_HOOK_PORT} in use by another aight instance)`);
 }
-
-const hookServer = startHookServer(HOOK_PORT);
-const hookPort = hookServer.port;
-const hookUrl = `http://127.0.0.1:${hookPort}${HOOK_PATH}`;
-
-writeFileSync(join(STATE_DIR, `hook-port-${process.pid}.txt`), String(hookPort), {
-  mode: 0o600,
-});
-// Write full hook URL (with secret) so Claude Code can configure hooks dynamically
-writeFileSync(join(STATE_DIR, `hook-url-${process.pid}.txt`), hookUrl, {
-  mode: 0o600,
-});
-console.error(`[aight] Hook server listening on ${hookUrl}`);
-
-// Auto-configure hooks in the project's settings.local.json.
-// Reads all active hook-url files (one per running plugin instance),
-// filters out dead processes, and writes ALL live URLs as hooks.
-// This way multiple simultaneous sessions each get their own tool events.
-configureProjectHooks(STATE_DIR);
 
 // ── Connect to Claude Code over stdio ──
 const transport = new StdioServerTransport();

@@ -2,11 +2,15 @@
 set -euo pipefail
 
 # Aight Channel Plugin — Setup Script
-# Installs dependencies and creates a shell alias for easy launching.
+# Installs dependencies, configures hooks, and creates a shell alias.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ALIAS_NAME="claude-aight"
 ALIAS_CMD="claude --dangerously-load-development-channels server:aight"
+
+HOOK_PORT=7891
+HOOK_PATH="/aight-hook"
+HOOK_URL="http://127.0.0.1:${HOOK_PORT}${HOOK_PATH}"
 
 # Colors
 GREEN='\033[0;32m'
@@ -34,6 +38,57 @@ echo -e "${YELLOW}Installing dependencies...${NC}"
 cd "$SCRIPT_DIR"
 bun install --no-summary
 echo -e "${GREEN}Dependencies installed.${NC}"
+
+# ── Configure hooks ──
+# Writes tool event hooks to ~/.claude/settings.local.json so Claude Code
+# sends tool events to the aight plugin. Uses a fixed port + path so the
+# config is stable across restarts (no chicken-and-egg problem).
+SETTINGS_FILE="$HOME/.claude/settings.local.json"
+mkdir -p "$HOME/.claude"
+
+configure_hooks() {
+  local hook_entry
+  hook_entry=$(cat <<HOOKJSON
+{"matcher":".*","hooks":[{"type":"http","url":"${HOOK_URL}","timeout":5}]}
+HOOKJSON
+)
+
+  if [ -f "$SETTINGS_FILE" ]; then
+    # File exists — merge hooks using bun to handle JSON properly
+    bun -e "
+      const fs = require('fs');
+      const settings = JSON.parse(fs.readFileSync('${SETTINGS_FILE}', 'utf-8'));
+      const hookEntry = ${hook_entry};
+      const hooks = settings.hooks || {};
+      for (const event of ['PreToolUse', 'PostToolUse', 'PostToolUseFailure']) {
+        const existing = hooks[event] || [];
+        const filtered = existing.filter(e => {
+          const h = e.hooks || [];
+          return !h.some(x => typeof x.url === 'string' && (x.url.includes('/aight-hook') || x.url.includes('/hook-event/')));
+        });
+        hooks[event] = [...filtered, hookEntry];
+      }
+      settings.hooks = hooks;
+      fs.writeFileSync('${SETTINGS_FILE}', JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
+    "
+    echo -e "  ${GREEN}Updated${NC} hooks in ${SETTINGS_FILE}"
+  else
+    # Create new settings file with hooks
+    cat > "$SETTINGS_FILE" <<SETTINGSJSON
+{
+  "hooks": {
+    "PreToolUse": [${hook_entry}],
+    "PostToolUse": [${hook_entry}],
+    "PostToolUseFailure": [${hook_entry}]
+  }
+}
+SETTINGSJSON
+    chmod 600 "$SETTINGS_FILE"
+    echo -e "  ${GREEN}Created${NC} hooks config at ${SETTINGS_FILE}"
+  fi
+}
+
+configure_hooks
 
 # ── Add shell alias ──
 SHELL_NAME="$(basename "$SHELL")"
