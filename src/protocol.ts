@@ -52,6 +52,10 @@ export interface RelayReconnected {
   partnerConnected: boolean;
 }
 
+export interface RelayAuthRequired {
+  type: "auth_required";
+}
+
 /** All possible inbound messages the plugin can receive */
 export type InboundMessage =
   | AppMessage
@@ -62,7 +66,8 @@ export type InboundMessage =
   | RelayPartnerDisconnected
   | RelayWaitingForPair
   | RelayPong
-  | RelayReconnected;
+  | RelayReconnected
+  | RelayAuthRequired;
 
 // ── Outbound: Plugin → App (via relay) ──
 
@@ -234,6 +239,8 @@ export function parseInboundMessage(raw: unknown): InboundMessage | null {
       return { type: "pong" };
     case "reconnected":
       return msg as unknown as RelayReconnected;
+    case "auth_required":
+      return { type: "auth_required" };
     default:
       return null;
   }

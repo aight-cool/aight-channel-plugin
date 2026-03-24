@@ -140,6 +140,9 @@ export class RelayClient {
         return;
       }
 
+      // Expected relay control messages — handle silently
+      if (msg.type === "auth_required") return;
+
       if (msg.type === "waiting_for_pair") {
         console.error(`[aight-relay] Waiting for app to pair...`);
         return;
