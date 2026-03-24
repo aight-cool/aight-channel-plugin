@@ -34,7 +34,6 @@ import { writeFileSync, mkdirSync, readFileSync, unlinkSync, statSync } from "fs
 import { join, extname, basename } from "path";
 import { homedir } from "os";
 
-import { randomBytes } from "crypto";
 
 const RELAY_URL = process.env.AIGHT_RELAY_URL || "https://channels.aight.cool";
 const STATE_DIR = join(homedir(), ".claude", "channels", "aight");
@@ -42,10 +41,10 @@ const INBOX_DIR = join(STATE_DIR, "inbox");
 const HOOK_PORT = parseInt(process.env.AIGHT_HOOK_PORT || "0", 10);
 const CODE_FILE = join(STATE_DIR, `pairing-code-${process.pid}.txt`);
 
-// Per-instance secret prevents tool events from other sessions leaking in.
-// Hooks are project-scoped in Claude Code, so without this, ANY session
-// in the same project would send its tool events to our hook server.
-const HOOK_SECRET = randomBytes(16).toString("hex");
+// Per-instance hook path prevents tool events from other sessions leaking in.
+// Each instance gets its own path based on PID — hooks are configured to
+// fan out to all live instances, and each only accepts its own path.
+const HOOK_PATH = `/hook-event/${process.pid}`;
 
 // Ensure state directories exist once at startup
 mkdirSync(INBOX_DIR, { recursive: true });
@@ -298,7 +297,7 @@ function startHookServer(port: number): ReturnType<typeof Bun.serve> {
       hostname: "127.0.0.1",
   async fetch(req) {
     const url = new URL(req.url);
-    if (req.method === "POST" && url.pathname === `/hook-event/${HOOK_SECRET}`) {
+    if (req.method === "POST" && url.pathname === HOOK_PATH) {
       try {
         const event = (await req.json()) as Record<string, unknown>;
         const hookEvent = event.hook_event_name as string | undefined;
@@ -353,7 +352,7 @@ function startHookServer(port: number): ReturnType<typeof Bun.serve> {
 
 const hookServer = startHookServer(HOOK_PORT);
 const hookPort = hookServer.port;
-const hookUrl = `http://127.0.0.1:${hookPort}/hook-event/${HOOK_SECRET}`;
+const hookUrl = `http://127.0.0.1:${hookPort}${HOOK_PATH}`;
 
 writeFileSync(join(STATE_DIR, `hook-port-${process.pid}.txt`), String(hookPort), {
   mode: 0o600,
