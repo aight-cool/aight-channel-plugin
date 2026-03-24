@@ -2,7 +2,7 @@
  * Shared utilities used by the plugin and testable in isolation.
  */
 
-import { readdirSync, unlinkSync, statSync } from "fs";
+import { readdirSync, readFileSync, unlinkSync, statSync } from "fs";
 import { join } from "path";
 import { LIMITS } from "./protocol";
 
@@ -54,7 +54,7 @@ export function cleanStalePidFiles(stateDir: string, ownPid: number): void {
   try {
     const files = readdirSync(stateDir);
     for (const f of files) {
-      const pidMatch = f.match(/^pairing-code-(\d+)\.txt$/);
+      const pidMatch = f.match(/^(?:pairing-code|hook-port)-(\d+)\.txt$/);
       if (!pidMatch) continue;
 
       const pid = parseInt(pidMatch[1]!, 10);
@@ -159,3 +159,34 @@ export function summarizeToolInput(
   return JSON.stringify(toolInput).slice(0, 200);
 }
 
+// ── Live instance port discovery ──
+
+/** Read hook-port-{pid}.txt files for all live plugin instances */
+export function getLiveInstancePorts(stateDir: string, ownPid: number): number[] {
+  const ports: number[] = [];
+  try {
+    for (const f of readdirSync(stateDir)) {
+      const match = f.match(/^hook-port-(\d+)\.txt$/);
+      if (!match) continue;
+      const pid = parseInt(match[1]!, 10);
+      if (pid === ownPid) continue;
+
+      // Check if process is alive
+      try {
+        process.kill(pid, 0);
+      } catch {
+        continue;
+      }
+
+      try {
+        const port = parseInt(readFileSync(join(stateDir, f), "utf-8").trim(), 10);
+        if (port > 0) ports.push(port);
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    // state dir doesn't exist
+  }
+  return ports;
+}

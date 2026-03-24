@@ -27,6 +27,7 @@ import {
   mapHookEvent,
   mapSubagentEvent,
   summarizeToolInput,
+  getLiveInstancePorts,
 } from "./utils";
 
 import { writeFileSync, mkdirSync, readFileSync, unlinkSync, statSync } from "fs";
@@ -262,7 +263,7 @@ async function forwardToMCP(data: InboundMessage): Promise<void> {
 }
 
 // ── Cleanup PID-specific files on exit ──
-const PID_FILES = [CODE_FILE];
+const PID_FILES = [CODE_FILE, join(STATE_DIR, `hook-port-${process.pid}.txt`)];
 
 function cleanupOnExit() {
   for (const f of PID_FILES) {
@@ -284,66 +285,111 @@ cleanStalePidFiles(STATE_DIR, process.pid);
 cleanInbox(INBOX_DIR, LIMITS.MAX_INBOX_SIZE);
 
 // ── Hook event HTTP server ──
-// Uses a fixed port + path so the hooks config can be written once by `setup`
-// and never needs to change. If the port is already taken (another aight instance
-// owns it), this instance skips the hook server — tool events still reach the
-// phone through whichever instance owns the port.
-let hookServerActive = false;
+// Each instance starts its own hook listener on an auto-assigned port.
+// Additionally, the first instance to grab the well-known port (7891) acts
+// as a fan-out proxy: it reads all live instance ports from STATE_DIR and
+// forwards incoming hook events to each one. This way the hooks config
+// (written once by `setup`) points to a single stable URL, but all
+// instances receive tool events.
+
+/** Process a hook event and broadcast to relay */
+function handleHookEvent(event: Record<string, unknown>): void {
+  const hookEvent = event.hook_event_name as string | undefined;
+  const toolName = event.tool_name as string | undefined;
+  const toolInput = event.tool_input as Record<string, unknown> | undefined;
+  const toolResult = event.tool_result as unknown;
+
+  if (!hookEvent) return;
+
+  const mapped = mapHookEvent(hookEvent);
+  if (mapped) {
+    broadcast({
+      type: "tool_event",
+      event: mapped,
+      tool: toolName || "unknown",
+      input: summarizeToolInput(toolName, toolInput),
+      ...(mapped === "error" && toolResult
+        ? { error: String(toolResult).slice(0, 200) }
+        : {}),
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  const subagentMapped = mapSubagentEvent(hookEvent);
+  if (subagentMapped) {
+    broadcast({
+      type: "tool_event",
+      event: subagentMapped,
+      tool: "SubAgent",
+      input: (event.session_id as string) || "",
+      timestamp: new Date().toISOString(),
+    });
+  }
+}
+
+// Instance-local hook listener (auto-assigned port)
+const instanceHookServer = Bun.serve({
+  port: 0,
+  hostname: "127.0.0.1",
+  async fetch(req) {
+    if (req.method === "POST" && new URL(req.url).pathname === AIGHT_HOOK_PATH) {
+      try {
+        handleHookEvent((await req.json()) as Record<string, unknown>);
+        return Response.json({ ok: true });
+      } catch (err) {
+        console.error(`[aight] Hook event parse error: ${err}`);
+        return Response.json({ error: "Invalid JSON" }, { status: 400 });
+      }
+    }
+    return new Response("Not found", { status: 404 });
+  },
+});
+
+const instanceHookPort = instanceHookServer.port!;
+writeFileSync(join(STATE_DIR, `hook-port-${process.pid}.txt`), String(instanceHookPort), {
+  mode: 0o600,
+});
+
+// Try to own the well-known port (7891) as the fan-out proxy
 try {
   Bun.serve({
     port: AIGHT_HOOK_PORT,
     hostname: "127.0.0.1",
     async fetch(req) {
-      const url = new URL(req.url);
-      if (req.method === "POST" && url.pathname === AIGHT_HOOK_PATH) {
+      if (req.method === "POST" && new URL(req.url).pathname === AIGHT_HOOK_PATH) {
+        let body: string;
         try {
-          const event = (await req.json()) as Record<string, unknown>;
-          const hookEvent = event.hook_event_name as string | undefined;
-          const toolName = event.tool_name as string | undefined;
-          const toolInput = event.tool_input as Record<string, unknown> | undefined;
-          const toolResult = event.tool_result as unknown;
-
-          if (hookEvent) {
-            const mapped = mapHookEvent(hookEvent);
-            if (mapped) {
-              broadcast({
-                type: "tool_event",
-                event: mapped,
-                tool: toolName || "unknown",
-                input: summarizeToolInput(toolName, toolInput),
-                ...(mapped === "error" && toolResult
-                  ? { error: String(toolResult).slice(0, 200) }
-                  : {}),
-                timestamp: new Date().toISOString(),
-              });
-            }
-
-            const subagentMapped = mapSubagentEvent(hookEvent);
-            if (subagentMapped) {
-              broadcast({
-                type: "tool_event",
-                event: subagentMapped,
-                tool: "SubAgent",
-                input: (event.session_id as string) || "",
-                timestamp: new Date().toISOString(),
-              });
-            }
-          }
-
-          return Response.json({ ok: true });
-        } catch (err) {
-          console.error(`[aight] Hook event parse error: ${err}`);
-          return Response.json({ error: "Invalid JSON" }, { status: 400 });
+          body = await req.text();
+        } catch {
+          return Response.json({ error: "Invalid body" }, { status: 400 });
         }
+
+        // Fan out to all live instance ports (including ourselves)
+        const ports = getLiveInstancePorts(STATE_DIR, process.pid);
+        ports.push(instanceHookPort); // always include self
+        const unique = [...new Set(ports)];
+
+        await Promise.allSettled(
+          unique.map((port) =>
+            fetch(`http://127.0.0.1:${port}${AIGHT_HOOK_PATH}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body,
+            }).catch(() => {})
+          ),
+        );
+
+        return Response.json({ ok: true });
       }
       return new Response("Not found", { status: 404 });
     },
   });
-  hookServerActive = true;
-  console.error(`[aight] Hook server listening on http://127.0.0.1:${AIGHT_HOOK_PORT}${AIGHT_HOOK_PATH}`);
+  console.error(`[aight] Hook proxy listening on http://127.0.0.1:${AIGHT_HOOK_PORT}${AIGHT_HOOK_PATH} (fan-out to all instances)`);
 } catch {
-  console.error(`[aight] Hook server skipped (port ${AIGHT_HOOK_PORT} in use by another aight instance)`);
+  console.error(`[aight] Hook proxy skipped (port ${AIGHT_HOOK_PORT} owned by another instance)`);
 }
+
+console.error(`[aight] Instance hook listener on port ${instanceHookPort}`);
 
 // ── Connect to Claude Code over stdio ──
 const transport = new StdioServerTransport();

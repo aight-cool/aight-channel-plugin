@@ -29,15 +29,14 @@ describe("cleanStalePidFiles", () => {
     expect(remaining).not.toContain(deadFile);
   });
 
-  it("ignores non-pairing-code PID files", () => {
-    // hook-port files are no longer managed per-PID
-    const otherFile = `hook-port-99999999.txt`;
-    writeFileSync(join(testDir, otherFile), "12345");
+  it("removes hook-port files for dead PIDs", () => {
+    const deadFile = `hook-port-99999999.txt`;
+    writeFileSync(join(testDir, deadFile), "12345");
 
     cleanStalePidFiles(testDir, process.pid);
 
     const remaining = readdirSync(testDir);
-    expect(remaining).toContain(otherFile); // not cleaned — not a pairing-code file
+    expect(remaining).not.toContain(deadFile);
   });
 
   it("ignores non-PID files", () => {
