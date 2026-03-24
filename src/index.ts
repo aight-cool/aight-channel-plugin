@@ -27,6 +27,7 @@ import {
   mapHookEvent,
   mapSubagentEvent,
   summarizeToolInput,
+  configureProjectHooks,
 } from "./utils";
 
 import { writeFileSync, mkdirSync, readFileSync, unlinkSync, statSync } from "fs";
@@ -362,10 +363,12 @@ writeFileSync(join(STATE_DIR, `hook-url-${process.pid}.txt`), hookUrl, {
   mode: 0o600,
 });
 console.error(`[aight] Hook server listening on ${hookUrl}`);
-console.error(`[aight] Configure hooks in .claude/settings.json:`);
-console.error(
-  `[aight]   "hooks": { "PreToolUse": [{ "type": "http", "url": "${hookUrl}" }], "PostToolUse": [{ "type": "http", "url": "${hookUrl}" }] }`,
-);
+
+// Auto-configure hooks in the project's settings.local.json.
+// Reads all active hook-url files (one per running plugin instance),
+// filters out dead processes, and writes ALL live URLs as hooks.
+// This way multiple simultaneous sessions each get their own tool events.
+configureProjectHooks(STATE_DIR);
 
 // ── Connect to Claude Code over stdio ──
 const transport = new StdioServerTransport();
