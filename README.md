@@ -68,7 +68,6 @@ Claude gets your messages as channel notifications and responds using the `reply
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `AIGHT_RELAY_URL` | Custom relay server URL | `https://channels.aight.cool` |
-| `AIGHT_HOOK_PORT` | Hook server port (0 = auto) | `0` |
 
 ## Self-hosted relay
 
