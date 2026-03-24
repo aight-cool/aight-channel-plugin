@@ -210,8 +210,10 @@ export function configureProjectHooks(stateDir: string): void {
     hooks: hookEntries,
   };
 
-  // Read existing settings.local.json, merge hooks, write back
-  const settingsDir = join(process.cwd(), ".claude");
+  // Write hooks to user-level settings (~/.claude/settings.local.json).
+  // Project-level won't work because the plugin's cwd is the plugin dir,
+  // not the user's project. User-level hooks apply to all sessions.
+  const settingsDir = join(require("os").homedir(), ".claude");
   const settingsPath = join(settingsDir, "settings.local.json");
 
   let settings: Record<string, unknown> = {};
