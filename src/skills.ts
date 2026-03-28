@@ -7,7 +7,7 @@
 // Parses YAML frontmatter for `name` and `description`.
 // Project skills override global skills with the same name.
 
-import { readdirSync, readFileSync } from "fs";
+import { readdirSync, readFileSync, statSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
@@ -20,6 +20,8 @@ export interface SkillInfo {
 /**
  * Parse YAML frontmatter from a SKILL.md file.
  * Extracts `name` and `description` fields using simple regex.
+ * Handles both inline (`description: foo`) and multi-line (`description: |`)
+ * YAML values.
  */
 function parseFrontmatter(
   content: string,
@@ -29,13 +31,25 @@ function parseFrontmatter(
 
   const block = match[1]!;
   const nameMatch = block.match(/^name:\s*(.+)$/m);
-  const descMatch = block.match(/^description:\s*(.+)$/m);
 
   if (!nameMatch?.[1]) return null;
 
+  // Try inline description first, then multi-line YAML block scalar
+  const inlineDesc = block.match(/^description:\s*(?![|>])(.+)$/m);
+  let description = inlineDesc?.[1]?.trim() ?? "";
+
+  if (!description) {
+    // Multi-line: description: | or description: >
+    // Grab the first indented line after the marker
+    const multiLine = block.match(/^description:\s*[|>]-?\s*\n([ \t]+\S.*)$/m);
+    if (multiLine?.[1]) {
+      description = multiLine[1].trim();
+    }
+  }
+
   return {
     name: nameMatch[1].trim(),
-    description: descMatch?.[1]?.trim() ?? "",
+    description,
   };
 }
 
@@ -52,7 +66,10 @@ function scanSkillsDir(
   try {
     const entries = readdirSync(skillsDir, { withFileTypes: true });
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
+      // Follow symlinks — many skills are symlinked (e.g. gstack/)
+      const isDir = entry.isDirectory() ||
+        (entry.isSymbolicLink() && statSync(join(skillsDir, entry.name)).isDirectory());
+      if (!isDir) continue;
       try {
         const content = readFileSync(
           join(skillsDir, entry.name, "SKILL.md"),
