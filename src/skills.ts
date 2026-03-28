@@ -67,8 +67,10 @@ function scanSkillsDir(
     const entries = readdirSync(skillsDir, { withFileTypes: true });
     for (const entry of entries) {
       // Follow symlinks — many skills are symlinked (e.g. gstack/)
-      const isDir = entry.isDirectory() ||
-        (entry.isSymbolicLink() && statSync(join(skillsDir, entry.name)).isDirectory());
+      let isDir = entry.isDirectory();
+      if (!isDir && entry.isSymbolicLink()) {
+        try { isDir = statSync(join(skillsDir, entry.name)).isDirectory(); } catch {}
+      }
       if (!isDir) continue;
       try {
         const content = readFileSync(
