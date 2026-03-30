@@ -214,7 +214,7 @@ export function parseInboundMessage(raw: unknown): InboundMessage | null {
         if (!Array.isArray(msg.attachments)) return null;
         if (msg.attachments.length > LIMITS.MAX_ATTACHMENTS_PER_MESSAGE) return null;
         for (const att of msg.attachments) {
-          if (typeof att.fileName !== "string" || typeof att.content !== "string") return null;
+          if (typeof att.fileName !== "string" || typeof att.mimeType !== "string" || typeof att.content !== "string") return null;
           // Base64 size ≈ 4/3 of binary size
           const estimatedSize = (att.content.length * 3) / 4;
           if (estimatedSize > LIMITS.MAX_ATTACHMENT_SIZE) return null;

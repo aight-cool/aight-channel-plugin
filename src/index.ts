@@ -44,7 +44,7 @@ const CODE_FILE = join(STATE_DIR, `pairing-code-${process.pid}.txt`);
 const AIGHT_HOOK_PORT = 7891;
 const AIGHT_HOOK_PATH = "/aight-hook";
 
-mkdirSync(INBOX_DIR, { recursive: true });
+mkdirSync(INBOX_DIR, { recursive: true, mode: 0o700 });
 
 const rateLimiter = createRateLimiter();
 
