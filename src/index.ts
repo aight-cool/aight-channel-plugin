@@ -225,18 +225,18 @@ async function forwardToMCP(data: InboundMessage): Promise<void> {
   };
   if (data.id) meta.message_id = data.id;
 
+  const savedPaths: string[] = [];
   if (data.attachments?.length) {
-    const paths: string[] = [];
     for (const att of data.attachments) {
       try {
-        paths.push(saveAttachment(att));
+        savedPaths.push(saveAttachment(att));
       } catch (err) {
         console.error(`[aight] Failed to save attachment: ${err}`);
       }
     }
-    if (paths.length > 0) {
-      meta.file_path = paths[0]!;
-      if (paths.length > 1) meta.file_paths = paths.join(",");
+    if (savedPaths.length > 0) {
+      meta.file_path = savedPaths[0]!;
+      if (savedPaths.length > 1) meta.file_paths = savedPaths.join(",");
     }
   }
 
@@ -244,10 +244,16 @@ async function forwardToMCP(data: InboundMessage): Promise<void> {
     `[aight] Message from app: "${data.content.slice(0, 100)}"${data.attachments?.length ? ` (${data.attachments.length} attachments)` : ""}`,
   );
 
+  let content = data.content;
+  if (savedPaths.length > 0) {
+    const fileList = savedPaths.map((p) => `- ${p}`).join("\n");
+    content += `\n\n[Attached files — use the Read tool to view]\n${fileList}`;
+  }
+
   try {
     await mcp.notification({
       method: "notifications/claude/channel",
-      params: { content: data.content, meta },
+      params: { content, meta },
     });
   } catch (err) {
     console.error(`[aight] MCP notification failed: ${err}`);

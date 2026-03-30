@@ -1,8 +1,9 @@
-// Skill Discovery — finds Claude Code skills from SKILL.md files
+// Skill Discovery — finds all Claude Code skills
 //
-// Scans two locations:
-//   1. Project: <cwd>/.claude/skills/<name>/SKILL.md
+// Three sources (in priority order, later overrides earlier):
+//   1. AI-registered skills (via registerSkills()) — built-in + harness skills
 //   2. Global:  ~/.claude/skills/<name>/SKILL.md
+//   3. Project: <cwd>/.claude/skills/<name>/SKILL.md
 //
 // Parses YAML frontmatter for `name` and `description`.
 // Project skills override global skills with the same name.
@@ -92,6 +93,24 @@ function scanSkillsDir(
   return skills;
 }
 
+// Skills registered at runtime by the AI (built-in/harness skills
+// that don't have SKILL.md files on disk).
+let registeredSkills: SkillInfo[] = [];
+
+/**
+ * Register skills from the AI. Called when the AI sees the skills
+ * list in the system-reminder and pushes them to the plugin.
+ * Returns true if the set changed (caller should re-broadcast).
+ */
+export function registerSkills(skills: SkillInfo[]): boolean {
+  const prev = JSON.stringify(registeredSkills.map((s) => s.name).sort());
+  registeredSkills = skills;
+  // Invalidate cache so next discoverSkills() picks them up
+  cachedSkills = null;
+  const next = JSON.stringify(registeredSkills.map((s) => s.name).sort());
+  return prev !== next;
+}
+
 // Cache: re-scan at most once per 30 seconds to avoid
 // repeated sync filesystem reads on reconnect storms.
 let cachedSkills: SkillInfo[] | null = null;
@@ -100,8 +119,13 @@ const CACHE_TTL_MS = 30_000;
 
 /**
  * Discover all available Claude Code skills.
- * Project skills override global skills with the same name.
- * Results are cached for 30s to avoid repeated filesystem reads.
+ *
+ * Sources (in priority order, later overrides earlier):
+ *   1. AI-registered skills — built-in/harness skills without SKILL.md files
+ *   2. Global SKILL.md files (~/.claude/skills/)
+ *   3. Project SKILL.md files (<cwd>/.claude/skills/)
+ *
+ * Results are cached for 30s to avoid repeated reads.
  */
 export function discoverSkills(): SkillInfo[] {
   const now = Date.now();
@@ -112,8 +136,11 @@ export function discoverSkills(): SkillInfo[] {
   const globalSkills = scanSkillsDir(homedir(), "global");
   const projectSkills = scanSkillsDir(process.cwd(), "project");
 
-  // Dedup: project overrides global
+  // Merge: registered first, then global, then project (later wins)
   const byName = new Map<string, SkillInfo>();
+  for (const skill of registeredSkills) {
+    byName.set(skill.name, skill);
+  }
   for (const skill of globalSkills) {
     byName.set(skill.name, skill);
   }
