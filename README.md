@@ -35,7 +35,7 @@ git clone https://github.com/aight-cool/aight-channel-plugin ~/.claude/channels/
 Then start Claude Code with the channel:
 
 ```bash
-claude-aight
+aight-claude
 ```
 
 That's it. A 6-digit pairing code will appear — enter it in the Aight app.
@@ -55,8 +55,35 @@ That's it. A 6-digit pairing code will appear — enter it in the Aight app.
 git clone https://github.com/aight-cool/aight-channel-plugin ~/.claude/channels/aight
 cd ~/.claude/channels/aight
 bun install
-claude --dangerously-load-development-channels server:aight
 ```
+
+The `server:aight` channel flag requires an MCP server named `aight` in the project's `.mcp.json`. The plugin ships one, but it only applies when you run Claude from the plugin directory itself. To launch from **any** project directory, add this function to your `~/.zshrc` or `~/.bashrc`:
+
+```bash
+# aight — Claude Code mobile channel
+aight-claude() {
+  local mcp=".mcp.json" had_mcp=false orig=""
+  [ -f "$mcp" ] && { had_mcp=true; orig=$(cat "$mcp"); }
+  _aight_restore() {
+    if $had_mcp; then printf '%s' "$orig" > "$mcp"; else rm -f "$mcp"; fi
+  }
+  trap '_aight_restore; trap - INT TERM; kill -INT $$' INT TERM
+  bun -e "
+    const fs = require('fs');
+    let c = {}; try { c = JSON.parse(fs.readFileSync('.mcp.json','utf8')); } catch {}
+    c.mcpServers = c.mcpServers || {};
+    c.mcpServers.aight = { command: 'bun', args: ['run','--cwd','\$HOME/.claude/channels/aight','--shell=bun','--silent','start'] };
+    fs.writeFileSync('.mcp.json', JSON.stringify(c,null,2)+'\n');
+  "
+  claude --dangerously-load-development-channels server:aight "$@"
+  local rc=$?
+  _aight_restore
+  trap - INT TERM
+  return $rc
+}
+```
+
+Then reload your shell and run `aight-claude`.
 
 </details>
 
@@ -87,7 +114,7 @@ Claude gets your messages as channel notifications and responds using the `reply
 Want to run your own relay? See [aight-channel-relay](https://github.com/aight-cool/aight-channel-relay).
 
 ```bash
-AIGHT_RELAY_URL=https://my-relay.example.com claude-aight
+AIGHT_RELAY_URL=https://my-relay.example.com aight-claude
 ```
 
 ## Protocol

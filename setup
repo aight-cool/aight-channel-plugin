@@ -2,11 +2,10 @@
 set -euo pipefail
 
 # Aight Channel Plugin — Setup Script
-# Installs dependencies, configures hooks, and creates a shell alias.
+# Installs dependencies, configures hooks, and creates a shell function.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ALIAS_NAME="claude-aight"
-ALIAS_CMD="claude --dangerously-load-development-channels server:aight"
+FUNC_NAME="aight-claude"
 
 HOOK_PORT=7891
 HOOK_PATH="/aight-hook"
@@ -90,41 +89,72 @@ SETTINGSJSON
 
 configure_hooks
 
-# ── Add shell alias ──
+# ── Add shell function ──
+# Claude's --dangerously-load-development-channels server:aight flag requires
+# an MCP server named "aight" in the project's .mcp.json. The plugin ships its
+# own .mcp.json, but that only works when you cd into the plugin directory.
+# This function injects the aight MCP server config into the current project's
+# .mcp.json before launching Claude, then restores the original on exit.
 SHELL_NAME="$(basename "$SHELL")"
-ADDED_ALIAS=false
+ADDED_FUNC=false
 
-add_alias() {
+add_shell_function() {
   local rc_file="$1"
-  local alias_line="alias ${ALIAS_NAME}='${ALIAS_CMD}'"
 
-  if [ -f "$rc_file" ] && grep -qF "$ALIAS_NAME" "$rc_file"; then
-    echo -e "  Alias ${BOLD}${ALIAS_NAME}${NC} already exists in ${rc_file}"
+  # Remove old single-line alias if present (from previous versions)
+  if [ -f "$rc_file" ] && grep -q "^alias ${FUNC_NAME}=" "$rc_file"; then
+    grep -v "^alias ${FUNC_NAME}=" "$rc_file" > "${rc_file}.tmp" && mv "${rc_file}.tmp" "$rc_file"
+    echo -e "  ${YELLOW}Removed${NC} old alias from ${rc_file}"
+  fi
+
+  if [ -f "$rc_file" ] && grep -qF "${FUNC_NAME}()" "$rc_file"; then
+    echo -e "  Function ${BOLD}${FUNC_NAME}${NC} already exists in ${rc_file}"
     return
   fi
 
-  echo "" >> "$rc_file"
-  echo "# aight — Claude Code mobile channel" >> "$rc_file"
-  echo "$alias_line" >> "$rc_file"
-  echo -e "  ${GREEN}Added alias${NC} ${BOLD}${ALIAS_NAME}${NC} to ${rc_file}"
-  ADDED_ALIAS=true
+  cat >> "$rc_file" <<'SHELLFUNC'
+
+# aight — Claude Code mobile channel
+aight-claude() {
+  local mcp=".mcp.json" had_mcp=false orig=""
+  [ -f "$mcp" ] && { had_mcp=true; orig=$(cat "$mcp"); }
+  _aight_restore() {
+    if $had_mcp; then printf '%s' "$orig" > "$mcp"; else rm -f "$mcp"; fi
+  }
+  trap '_aight_restore; trap - INT TERM; kill -INT $$' INT TERM
+  bun -e "
+    const fs = require('fs');
+    let c = {}; try { c = JSON.parse(fs.readFileSync('.mcp.json','utf8')); } catch {}
+    c.mcpServers = c.mcpServers || {};
+    c.mcpServers.aight = { command: 'bun', args: ['run','--cwd','$HOME/.claude/channels/aight','--shell=bun','--silent','start'] };
+    fs.writeFileSync('.mcp.json', JSON.stringify(c,null,2)+'\n');
+  "
+  claude --dangerously-load-development-channels server:aight "$@"
+  local rc=$?
+  _aight_restore
+  trap - INT TERM
+  return $rc
+}
+SHELLFUNC
+  echo -e "  ${GREEN}Added${NC} ${BOLD}${FUNC_NAME}${NC} function to ${rc_file}"
+  ADDED_FUNC=true
 }
 
 case "$SHELL_NAME" in
   zsh)
-    add_alias "$HOME/.zshrc"
+    add_shell_function "$HOME/.zshrc"
     ;;
   bash)
     if [ -f "$HOME/.bash_profile" ]; then
-      add_alias "$HOME/.bash_profile"
+      add_shell_function "$HOME/.bash_profile"
     else
-      add_alias "$HOME/.bashrc"
+      add_shell_function "$HOME/.bashrc"
     fi
     ;;
   *)
-    echo -e "  ${YELLOW}Unknown shell ($SHELL_NAME).${NC} Add this alias manually:"
+    echo -e "  ${YELLOW}Unknown shell ($SHELL_NAME).${NC} Add this function manually to your shell rc file:"
     echo ""
-    echo "    alias ${ALIAS_NAME}='${ALIAS_CMD}'"
+    echo "  See the aight-claude() function in this repo's README.md"
     echo ""
     ;;
 esac
@@ -134,14 +164,14 @@ echo ""
 echo -e "${GREEN}${BOLD}Setup complete!${NC}"
 echo ""
 
-if [ "$ADDED_ALIAS" = true ]; then
+if [ "$ADDED_FUNC" = true ]; then
   echo -e "  Restart your shell (or run ${BOLD}source ~/.${SHELL_NAME}rc${NC}), then:"
 else
   echo "  Run:"
 fi
 
 echo ""
-echo -e "    ${BOLD}${ALIAS_NAME}${NC}"
+echo -e "    ${BOLD}${FUNC_NAME}${NC}"
 echo ""
 echo "  A 6-digit pairing code will appear. Enter it in the Aight app."
 echo ""
