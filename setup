@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # Aight Channel Plugin — Setup Script
-# Installs dependencies, configures hooks, and creates a shell alias.
+# Installs dependencies, configures hooks, and creates a shell function.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ALIAS_NAME="claude-aight"
+FUNC_NAME="claude-aight"
 
 HOOK_PORT=7891
 HOOK_PATH="/aight-hook"
@@ -96,19 +96,19 @@ configure_hooks
 # This function injects the aight MCP server config into the current project's
 # .mcp.json before launching Claude, then restores the original on exit.
 SHELL_NAME="$(basename "$SHELL")"
-ADDED_ALIAS=false
+ADDED_FUNC=false
 
 add_shell_function() {
   local rc_file="$1"
 
   # Remove old single-line alias if present (from previous versions)
-  if [ -f "$rc_file" ] && grep -q "^alias ${ALIAS_NAME}=" "$rc_file"; then
-    grep -v "^alias ${ALIAS_NAME}=" "$rc_file" > "${rc_file}.tmp" && mv "${rc_file}.tmp" "$rc_file"
+  if [ -f "$rc_file" ] && grep -q "^alias ${FUNC_NAME}=" "$rc_file"; then
+    grep -v "^alias ${FUNC_NAME}=" "$rc_file" > "${rc_file}.tmp" && mv "${rc_file}.tmp" "$rc_file"
     echo -e "  ${YELLOW}Removed${NC} old alias from ${rc_file}"
   fi
 
-  if [ -f "$rc_file" ] && grep -qF "claude-aight()" "$rc_file"; then
-    echo -e "  Function ${BOLD}${ALIAS_NAME}${NC} already exists in ${rc_file}"
+  if [ -f "$rc_file" ] && grep -qF "${FUNC_NAME}()" "$rc_file"; then
+    echo -e "  Function ${BOLD}${FUNC_NAME}${NC} already exists in ${rc_file}"
     return
   fi
 
@@ -136,8 +136,8 @@ claude-aight() {
   return $rc
 }
 SHELLFUNC
-  echo -e "  ${GREEN}Added${NC} ${BOLD}${ALIAS_NAME}${NC} function to ${rc_file}"
-  ADDED_ALIAS=true
+  echo -e "  ${GREEN}Added${NC} ${BOLD}${FUNC_NAME}${NC} function to ${rc_file}"
+  ADDED_FUNC=true
 }
 
 case "$SHELL_NAME" in
@@ -164,14 +164,14 @@ echo ""
 echo -e "${GREEN}${BOLD}Setup complete!${NC}"
 echo ""
 
-if [ "$ADDED_ALIAS" = true ]; then
+if [ "$ADDED_FUNC" = true ]; then
   echo -e "  Restart your shell (or run ${BOLD}source ~/.${SHELL_NAME}rc${NC}), then:"
 else
   echo "  Run:"
 fi
 
 echo ""
-echo -e "    ${BOLD}${ALIAS_NAME}${NC}"
+echo -e "    ${BOLD}${FUNC_NAME}${NC}"
 echo ""
 echo "  A 6-digit pairing code will appear. Enter it in the Aight app."
 echo ""
