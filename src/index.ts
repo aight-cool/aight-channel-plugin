@@ -79,7 +79,7 @@ const mcp = new Server(
       experimental: { "claude/channel": {} },
       tools: {},
     },
-    instructions: `The sender reads the Aight mobile app, not this session. Anything you want them to see must go through the reply tool — your transcript output never reaches the app.\n\nMessages from the Aight mobile app arrive as <channel source="aight" sender="..." device="..." message_id="...">. Reply with the reply tool. Keep replies concise and readable on a small screen. You can use markdown — the app renders it.`,
+    instructions: `Messages from the Aight mobile app arrive as <channel source="aight" sender="..." device="..." message_id="...">. ONLY use the reply tool to respond to these channel messages — your transcript output never reaches the app. Keep replies concise and readable on a small screen. You can use markdown — the app renders it.\n\nMessages typed directly in the terminal are regular user input — respond normally in the terminal. Do NOT use the reply tool for terminal messages.`,
   },
 );
 
