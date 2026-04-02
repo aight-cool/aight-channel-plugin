@@ -5,7 +5,7 @@ set -euo pipefail
 # Installs dependencies, configures hooks, and creates a shell function.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-FUNC_NAME="claude-aight"
+FUNC_NAME="aight-claude"
 
 HOOK_PORT=7891
 HOOK_PATH="/aight-hook"
@@ -115,7 +115,7 @@ add_shell_function() {
   cat >> "$rc_file" <<'SHELLFUNC'
 
 # aight — Claude Code mobile channel
-claude-aight() {
+aight-claude() {
   local mcp=".mcp.json" had_mcp=false orig=""
   [ -f "$mcp" ] && { had_mcp=true; orig=$(cat "$mcp"); }
   _aight_restore() {
@@ -154,7 +154,7 @@ case "$SHELL_NAME" in
   *)
     echo -e "  ${YELLOW}Unknown shell ($SHELL_NAME).${NC} Add this function manually to your shell rc file:"
     echo ""
-    echo "  See the claude-aight() function in this repo's README.md"
+    echo "  See the aight-claude() function in this repo's README.md"
     echo ""
     ;;
 esac

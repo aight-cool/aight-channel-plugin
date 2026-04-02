@@ -35,7 +35,7 @@ git clone https://github.com/aight-cool/aight-channel-plugin ~/.claude/channels/
 Then start Claude Code with the channel:
 
 ```bash
-claude-aight
+aight-claude
 ```
 
 That's it. A 6-digit pairing code will appear — enter it in the Aight app.
@@ -61,7 +61,7 @@ The `server:aight` channel flag requires an MCP server named `aight` in the proj
 
 ```bash
 # aight — Claude Code mobile channel
-claude-aight() {
+aight-claude() {
   local mcp=".mcp.json" had_mcp=false orig=""
   [ -f "$mcp" ] && { had_mcp=true; orig=$(cat "$mcp"); }
   _aight_restore() {
@@ -83,7 +83,7 @@ claude-aight() {
 }
 ```
 
-Then reload your shell and run `claude-aight`.
+Then reload your shell and run `aight-claude`.
 
 </details>
 
@@ -114,7 +114,7 @@ Claude gets your messages as channel notifications and responds using the `reply
 Want to run your own relay? See [aight-channel-relay](https://github.com/aight-cool/aight-channel-relay).
 
 ```bash
-AIGHT_RELAY_URL=https://my-relay.example.com claude-aight
+AIGHT_RELAY_URL=https://my-relay.example.com aight-claude
 ```
 
 ## Protocol
