@@ -55,8 +55,35 @@ That's it. A 6-digit pairing code will appear — enter it in the Aight app.
 git clone https://github.com/aight-cool/aight-channel-plugin ~/.claude/channels/aight
 cd ~/.claude/channels/aight
 bun install
-claude --dangerously-load-development-channels server:aight
 ```
+
+The `server:aight` channel flag requires an MCP server named `aight` in the project's `.mcp.json`. The plugin ships one, but it only applies when you run Claude from the plugin directory itself. To launch from **any** project directory, add this function to your `~/.zshrc` or `~/.bashrc`:
+
+```bash
+# aight — Claude Code mobile channel
+claude-aight() {
+  local mcp=".mcp.json" had_mcp=false orig=""
+  [ -f "$mcp" ] && { had_mcp=true; orig=$(cat "$mcp"); }
+  _aight_restore() {
+    if $had_mcp; then printf '%s' "$orig" > "$mcp"; else rm -f "$mcp"; fi
+  }
+  trap '_aight_restore; trap - INT TERM; kill -INT $$' INT TERM
+  bun -e "
+    const fs = require('fs');
+    let c = {}; try { c = JSON.parse(fs.readFileSync('.mcp.json','utf8')); } catch {}
+    c.mcpServers = c.mcpServers || {};
+    c.mcpServers.aight = { command: 'bun', args: ['run','--cwd','\$HOME/.claude/channels/aight','--shell=bun','--silent','start'] };
+    fs.writeFileSync('.mcp.json', JSON.stringify(c,null,2)+'\n');
+  "
+  claude --dangerously-load-development-channels server:aight "$@"
+  local rc=$?
+  _aight_restore
+  trap - INT TERM
+  return $rc
+}
+```
+
+Then reload your shell and run `claude-aight`.
 
 </details>
 
