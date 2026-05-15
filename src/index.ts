@@ -23,12 +23,19 @@ import {
   sanitizeFileName,
   createRateLimiter,
   cleanStalePidFiles,
+  cleanStaleClaims,
   cleanInbox,
   mapHookEvent,
   mapSubagentEvent,
   summarizeToolInput,
   getLiveInstancePorts,
   getPortForSession,
+  getPidForLocalPort,
+  findClaudeCliAncestor,
+  findInstanceByClaudeCliPid,
+  snapshotProcesses,
+  tryClaimSession,
+  claimFilePath,
 } from "./utils";
 
 import { writeFileSync, mkdirSync, readFileSync, unlinkSync, statSync } from "fs";
@@ -79,7 +86,7 @@ const mcp = new Server(
       experimental: { "claude/channel": {} },
       tools: {},
     },
-    instructions: `The sender reads the Aight mobile app, not this session. Anything you want them to see must go through the reply tool — your transcript output never reaches the app.\n\nMessages from the Aight mobile app arrive as <channel source="aight" sender="..." device="..." message_id="...">. Reply with the reply tool. Keep replies concise and readable on a small screen. You can use markdown — the app renders it.`,
+    instructions: `Messages from the Aight mobile app arrive as <channel source="aight" sender="..." device="..." message_id="...">. ONLY use the reply tool to respond to these channel messages — your transcript output never reaches the app. Keep replies concise and readable on a small screen. You can use markdown — the app renders it.\n\nMessages typed directly in the terminal are regular user input — respond normally in the terminal. Do NOT use the reply tool for terminal messages.`,
   },
 );
 
@@ -264,7 +271,9 @@ const SESSION_FILE = join(STATE_DIR, `session-${process.pid}.txt`);
 const PID_FILES = [CODE_FILE, join(STATE_DIR, `hook-port-${process.pid}.txt`), SESSION_FILE];
 
 function cleanupOnExit() {
-  for (const f of PID_FILES) {
+  const files = [...PID_FILES];
+  if (ownSessionId) files.push(claimFilePath(STATE_DIR, ownSessionId));
+  for (const f of files) {
     try {
       unlinkSync(f);
     } catch (err) {
@@ -279,6 +288,7 @@ process.on("SIGINT", () => { cleanupOnExit(); process.exit(0); });
 process.on("SIGTERM", () => { cleanupOnExit(); process.exit(0); });
 
 cleanStalePidFiles(STATE_DIR, process.pid);
+cleanStaleClaims(STATE_DIR);
 cleanInbox(INBOX_DIR, LIMITS.MAX_INBOX_SIZE);
 
 let ownSessionId: string | null = null;
@@ -291,11 +301,12 @@ function handleHookEvent(event: Record<string, unknown>): void {
 
   if (!hookEvent || !sessionId) return;
 
-  // Claim our session_id: first event we process, we own that session.
-  // The fan-out proxy routes known sessions directly to the right instance
-  // and only fans out unknown sessions. So the first unknown-session event
-  // we receive is ours.
+  // The proxy normally routes by inspecting the source Claude CLI's process
+  // tree, but falls back to fan-out if lsof can't identify the source. The
+  // atomic claim-<sid>.txt lock makes that fallback safe — without it, two
+  // unclaimed instances could both think they own the same fanned-out event.
   if (!ownSessionId) {
+    if (!tryClaimSession(STATE_DIR, sessionId)) return;
     ownSessionId = sessionId;
     try {
       writeFileSync(SESSION_FILE, sessionId, { mode: 0o600 });
@@ -305,7 +316,6 @@ function handleHookEvent(event: Record<string, unknown>): void {
     console.error(`[aight] Claimed session: ${ownSessionId}`);
   }
 
-  // Ignore events from other sessions
   if (sessionId !== ownSessionId) return;
 
   const mapped = mapHookEvent(hookEvent);
@@ -359,13 +369,84 @@ writeFileSync(join(STATE_DIR, `hook-port-${process.pid}.txt`), String(instanceHo
 
 // The first instance to grab port 7891 acts as fan-out proxy.
 // It caches session→port mappings to avoid disk I/O on every hook event.
+// Bounded to prevent unbounded growth across many sessions over time.
+const SESSION_PORT_CACHE_MAX = 1024;
 const sessionPortCache = new Map<string, number>();
+function rememberSessionPort(sessionId: string, port: number): void {
+  if (sessionPortCache.size >= SESSION_PORT_CACHE_MAX) {
+    const oldest = sessionPortCache.keys().next().value;
+    if (oldest !== undefined) sessionPortCache.delete(oldest);
+  }
+  sessionPortCache.set(sessionId, port);
+}
+
+/** Walk: request peer port → owning pid → Claude CLI ancestor → our matching MCP instance. */
+function resolveInstancePortFromRequest(
+  req: Request,
+  server: { requestIP: (r: Request) => { port: number } | null },
+): number | null {
+  const peer = server.requestIP(req);
+  if (!peer?.port) return null;
+  const sourcePid = getPidForLocalPort(peer.port);
+  if (!sourcePid) return null;
+  const procs = snapshotProcesses();
+  const cliPid = findClaudeCliAncestor(procs, sourcePid);
+  if (!cliPid) return null;
+  return findInstanceByClaudeCliPid(STATE_DIR, cliPid, procs)?.port ?? null;
+}
+
+/**
+ * Pick target instance ports for a hook event.
+ *
+ * Routing order: in-memory cache → on-disk session→port map → source-process
+ * lookup via the request's TCP peer → fan-out to every live instance.
+ *
+ * Fan-out is the unsafe path: if two unclaimed instances both receive the
+ * same unknown session, they race to claim it. The instance-side
+ * tryClaimSession lock prevents duplicate claims; source-process routing
+ * skips fan-out entirely when lsof can identify the firing Claude CLI.
+ */
+function routeEvent(
+  sessionId: string | undefined,
+  req: Request,
+  server: { requestIP: (r: Request) => { port: number } | null },
+): number[] {
+  if (!sessionId) return [instanceHookPort];
+
+  const cached = sessionPortCache.get(sessionId);
+  if (cached !== undefined) return [cached];
+
+  const diskPort = getPortForSession(STATE_DIR, sessionId);
+  if (diskPort) {
+    rememberSessionPort(sessionId, diskPort);
+    return [diskPort];
+  }
+
+  let resolved: number | null = null;
+  try {
+    resolved = resolveInstancePortFromRequest(req, server);
+  } catch (err) {
+    console.error(`[aight] Source-PID routing failed: ${err}`);
+  }
+  if (resolved !== null) {
+    rememberSessionPort(sessionId, resolved);
+    return [resolved];
+  }
+
+  const ports = getLiveInstancePorts(STATE_DIR, process.pid);
+  ports.push(instanceHookPort);
+  const targets = [...new Set(ports)];
+  console.error(
+    `[aight] Falling back to fan-out for unknown session ${sessionId.slice(0, 8)}… (${targets.length} instance(s))`,
+  );
+  return targets;
+}
 
 try {
   Bun.serve({
     port: AIGHT_HOOK_PORT,
     hostname: "127.0.0.1",
-    async fetch(req) {
+    async fetch(req, server) {
       if (req.method === "POST" && new URL(req.url).pathname === AIGHT_HOOK_PATH) {
         let body: string;
         try {
@@ -382,26 +463,7 @@ try {
         }
 
         const eventSessionId = parsed.session_id as string | undefined;
-
-        // Route: check cache first, then disk, then fan-out
-        let targetPorts: number[];
-        const cached = eventSessionId ? sessionPortCache.get(eventSessionId) : undefined;
-
-        if (cached) {
-          targetPorts = [cached];
-        } else if (eventSessionId) {
-          const diskPort = getPortForSession(STATE_DIR, eventSessionId);
-          if (diskPort) {
-            sessionPortCache.set(eventSessionId, diskPort);
-            targetPorts = [diskPort];
-          } else {
-            const ports = getLiveInstancePorts(STATE_DIR, process.pid);
-            ports.push(instanceHookPort);
-            targetPorts = [...new Set(ports)];
-          }
-        } else {
-          targetPorts = [instanceHookPort];
-        }
+        const targetPorts = routeEvent(eventSessionId, req, server);
 
         const results = await Promise.allSettled(
           targetPorts.map((port) =>
