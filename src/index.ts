@@ -188,6 +188,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 });
 
 function saveAttachment(att: InboundAttachment): string {
+  // Cap before write so the documented MAX_INBOX_SIZE actually bounds a
+  // long-running session, not just startup. Without this, a paired peer
+  // could accumulate disk usage at the per-minute rate limit indefinitely.
+  cleanInbox(INBOX_DIR, LIMITS.MAX_INBOX_SIZE);
   const ts = Date.now();
   const safeName = sanitizeFileName(att.fileName);
   const filePath = join(INBOX_DIR, `${ts}-${safeName}`);

@@ -4,3 +4,14 @@ dist/
 .env
 .dev.vars
 .DS_Store
+
+# Plugin runtime state. STATE_DIR (~/.claude/channels/aight) is a symlink to
+# the install dir for local-dev workflows, so these files land in the git
+# working tree. Keep them out of commits.
+claim-*.txt
+hook-port-*.txt
+pairing-code-*.txt
+session-*.txt
+
+# Local gstack working dir (security reports, learnings, telemetry)
+.gstack/
