@@ -1,4 +1,4 @@
-# aight
+# aight-claude-plugin
 
 Chat with your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) session from your phone — works from anywhere.
 
