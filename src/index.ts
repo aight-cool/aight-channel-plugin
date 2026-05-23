@@ -138,15 +138,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
 
   if (name === "reply") {
-    const { text, reply_to, files } = args as {
-      text: string;
-      reply_to?: string;
-      files?: string[];
-    };
+    const a = args as Record<string, unknown>;
+    const text = (a.text ?? a.message ?? "") as string;
+    const replyTo = (a.reply_to ?? a.message_id ?? null) as string | null;
+    const files = (a.files ?? []) as string[];
+
+    if (!text) {
+      return { content: [{ type: "text", text: "error: reply text is empty" }] };
+    }
+
     const msgId = `claude_${++messageCounter}`;
 
     const attachments: Array<{ fileName: string; mimeType: string; data: string }> = [];
-    if (files?.length) {
+    if (files.length) {
       for (const filePath of files) {
         const encoded = readFileAsBase64(filePath);
         if (encoded) {
@@ -162,7 +166,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     const payload: Record<string, unknown> = {
       type: "reply",
       id: msgId,
-      replyTo: reply_to || null,
+      replyTo: replyTo,
       content: text,
       sender: { id: "claude", name: "Claude", emoji: "\u{1F916}", username: "claude" },
       timestamp: new Date().toISOString(),
