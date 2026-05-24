@@ -28,6 +28,8 @@ import {
   mapHookEvent,
   mapSubagentEvent,
   summarizeToolInput,
+  summarizeToolResult,
+  extractLastAssistantText,
   getLiveInstancePorts,
   getPortForSession,
   getPidForLocalPort,
@@ -306,13 +308,10 @@ function handleHookEvent(event: Record<string, unknown>): void {
   const toolName = event.tool_name as string | undefined;
   const toolInput = event.tool_input as Record<string, unknown> | undefined;
   const toolResult = event.tool_result as unknown;
+  const transcriptPath = event.transcript_path as string | undefined;
 
   if (!hookEvent || !sessionId) return;
 
-  // The proxy normally routes by inspecting the source Claude CLI's process
-  // tree, but falls back to fan-out if lsof can't identify the source. The
-  // atomic claim-<sid>.txt lock makes that fallback safe — without it, two
-  // unclaimed instances could both think they own the same fanned-out event.
   if (!ownSessionId) {
     if (!tryClaimSession(STATE_DIR, sessionId)) return;
     ownSessionId = sessionId;
@@ -326,18 +325,32 @@ function handleHookEvent(event: Record<string, unknown>): void {
 
   if (sessionId !== ownSessionId) return;
 
+  if (hookEvent === "UserPromptSubmit") {
+    broadcast({
+      type: "turn_event",
+      event: "started",
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+
   const mapped = mapHookEvent(hookEvent);
   if (mapped) {
-    broadcast({
+    const payload: Record<string, unknown> = {
       type: "tool_event",
       event: mapped,
       tool: toolName || "unknown",
       input: summarizeToolInput(toolName, toolInput),
-      ...(mapped === "error" && toolResult
-        ? { error: String(toolResult).slice(0, 200) }
-        : {}),
       timestamp: new Date().toISOString(),
-    });
+    };
+    if (mapped === "error" && toolResult) {
+      payload.error = String(toolResult).slice(0, 200);
+    }
+    if (mapped === "end" && toolResult) {
+      const summary = summarizeToolResult(toolName, toolResult);
+      if (summary) payload.result = summary;
+    }
+    broadcast(payload);
   }
 
   const subagentMapped = mapSubagentEvent(hookEvent);
@@ -347,6 +360,24 @@ function handleHookEvent(event: Record<string, unknown>): void {
       event: subagentMapped,
       tool: "SubAgent",
       input: sessionId,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  if (hookEvent === "Stop") {
+    if (transcriptPath) {
+      const text = extractLastAssistantText(transcriptPath);
+      if (text) {
+        broadcast({
+          type: "assistant_message",
+          content: text.slice(0, LIMITS.MAX_CONTENT_LENGTH),
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+    broadcast({
+      type: "turn_event",
+      event: "ended",
       timestamp: new Date().toISOString(),
     });
   }

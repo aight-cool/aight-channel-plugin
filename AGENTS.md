@@ -54,8 +54,8 @@ the `claude/channel` experimental capability so Claude Code routes channel messa
 4. User enters code in Aight app → relay bridges the two WebSockets
 5. Messages flow bidirectionally
 
-### Hook Server (Tool Event Forwarding)
-Forwards Claude Code tool events (PreToolUse, PostToolUse, SubagentStart/Stop) to the phone app.
+### Hook Server (Tool Event + Response Forwarding)
+Forwards Claude Code tool events (PreToolUse, PostToolUse, SubagentStart/Stop) and assistant responses (Stop) to the phone app.
 
 **Architecture:** A fixed-port proxy (7891) + per-instance listeners with session-based routing.
 
@@ -75,7 +75,7 @@ Forwards Claude Code tool events (PreToolUse, PostToolUse, SubagentStart/Stop) t
 See `src/protocol.ts` for the full typed protocol. Summary:
 
 **App → Plugin:** `message`, `ping`, `request_skills`
-**Plugin → App:** `reply`, `reaction`, `ack`, `typing`, `connected`, `tool_event`, `skills_list`
+**Plugin → App:** `reply`, `reaction`, `ack`, `typing`, `connected`, `tool_event`, `assistant_message`, `skills_list`
 **Relay control:** `paired`, `partner_connected`, `partner_disconnected`, `waiting_for_pair`, `auth_required`, `pong`
 
 Full protocol documentation: `docs/PROTOCOL.md`
