@@ -118,6 +118,17 @@ add_shell_function() {
 
 # aight — Claude Code mobile channel
 aight-claude() {
+  local _aight_dir="$HOME/.claude/channels/aight"
+  # Auto-update from git (silent when up to date, skips on failure)
+  if [ -d "$_aight_dir/.git" ]; then
+    local _old; _old=$(git -C "$_aight_dir" rev-parse HEAD 2>/dev/null)
+    git -C "$_aight_dir" pull --ff-only -q 2>/dev/null
+    local _new; _new=$(git -C "$_aight_dir" rev-parse HEAD 2>/dev/null)
+    if [ "$_old" != "$_new" ]; then
+      echo "[aight] Updated to $(git -C "$_aight_dir" log -1 --format='%h %s' 2>/dev/null)"
+      (cd "$_aight_dir" && bun install --no-summary 2>/dev/null)
+    fi
+  fi
   local mcp=".mcp.json" had_mcp=false orig=""
   [ -f "$mcp" ] && { had_mcp=true; orig=$(cat "$mcp"); }
   _aight_restore() {
