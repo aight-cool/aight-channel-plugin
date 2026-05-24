@@ -59,7 +59,7 @@ HOOKJSON
       const settings = JSON.parse(fs.readFileSync('${SETTINGS_FILE}', 'utf-8'));
       const hookEntry = ${hook_entry};
       const hooks = settings.hooks || {};
-      for (const event of ['PreToolUse', 'PostToolUse', 'PostToolUseFailure']) {
+      for (const event of ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'UserPromptSubmit', 'Stop']) {
         const existing = hooks[event] || [];
         const filtered = existing.filter(e => {
           const h = e.hooks || [];
@@ -78,7 +78,9 @@ HOOKJSON
   "hooks": {
     "PreToolUse": [${hook_entry}],
     "PostToolUse": [${hook_entry}],
-    "PostToolUseFailure": [${hook_entry}]
+    "PostToolUseFailure": [${hook_entry}],
+    "UserPromptSubmit": [${hook_entry}],
+    "Stop": [${hook_entry}]
   }
 }
 SETTINGSJSON

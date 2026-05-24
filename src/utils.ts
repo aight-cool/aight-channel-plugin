@@ -230,6 +230,73 @@ export function summarizeToolInput(
   return JSON.stringify(toolInput).slice(0, 200);
 }
 
+export function summarizeToolResult(
+  toolName: string | undefined,
+  toolResult: unknown,
+): string {
+  if (toolResult === undefined || toolResult === null) return "";
+  const raw = typeof toolResult === "string" ? toolResult : JSON.stringify(toolResult);
+  if (!raw) return "";
+  if (toolName === "Read") {
+    const lineCount = raw.split("\n").length;
+    return `${lineCount} line${lineCount !== 1 ? "s" : ""} read`;
+  }
+  return raw.slice(0, 500);
+}
+
+interface TranscriptEntry {
+  type: string;
+  message?: {
+    role?: string;
+    content?: string | Array<{ type: string; text?: string }>;
+  };
+}
+
+export function extractLastAssistantText(transcriptPath: string): string | null {
+  let raw: string;
+  try {
+    raw = readFileSync(transcriptPath, "utf-8");
+  } catch {
+    return null;
+  }
+
+  const lines = raw.split("\n").filter((l) => l.trim());
+  const texts: string[] = [];
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let entry: TranscriptEntry;
+    try {
+      entry = JSON.parse(lines[i]!) as TranscriptEntry;
+    } catch {
+      continue;
+    }
+
+    if (entry.type === "assistant") {
+      const content = entry.message?.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block.type === "text" && block.text) texts.unshift(block.text);
+        }
+      }
+      continue;
+    }
+
+    if (entry.type === "user") {
+      const content = entry.message?.content;
+      // tool_result messages are mid-turn — keep scanning
+      if (
+        Array.isArray(content) &&
+        content.length > 0 &&
+        content.every((b) => b.type === "tool_result")
+      ) continue;
+      break;
+    }
+  }
+
+  const combined = texts.join("\n\n").trim();
+  return combined || null;
+}
+
 const HOOK_PORT_PATTERN = /^hook-port-(\d+)\.txt$/;
 
 /** Read hook-port-{pid}.txt files for all live plugin instances */
