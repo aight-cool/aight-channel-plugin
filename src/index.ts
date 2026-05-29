@@ -69,8 +69,12 @@ let thinkingRestoreValue: ThinkingRestoreValue | null = null;
 let weHoldThinkingClaim = false;
 const THINKING_CLAIM_FILE = join(STATE_DIR, `thinking-claim-${process.pid}.txt`);
 
-function parseThinkingClaimContent(content: string): ThinkingRestoreValue {
-  return content.trim() === "absent" ? "absent" : content.trim() === "true";
+function parseThinkingClaimContent(content: string): ThinkingRestoreValue | null {
+  const s = content.trim();
+  if (s === "absent") return "absent";
+  if (s === "true") return true;
+  if (s === "false") return false;
+  return null; // corrupt or empty — don't restore to a wrong value
 }
 
 function writeSettingsAtomic(settings: Record<string, unknown>): void {
