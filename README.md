@@ -75,7 +75,11 @@ aight-claude() {
     c.mcpServers.aight = { command: 'bun', args: ['run','--cwd','\$HOME/.claude/channels/aight','--shell=bun','--silent','start'] };
     fs.writeFileSync('.mcp.json', JSON.stringify(c,null,2)+'\n');
   "
-  claude --dangerously-load-development-channels server:aight "$@"
+  # AskUserQuestion's terminal picker can't be answered from the app (and a
+  # PreToolUse deny doesn't suppress it), so disable it — the model asks via a
+  # normal numbered-option reply instead, which the app renders as tappable.
+  claude --dangerously-load-development-channels server:aight \
+    --disallowedTools=AskUserQuestion "$@"
   local rc=$?
   _aight_restore
   trap - INT TERM
