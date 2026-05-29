@@ -188,7 +188,7 @@ const mcp = new Server(
       experimental: { "claude/channel": {} },
       tools: {},
     },
-    instructions: `Messages from the Aight mobile app arrive as <channel source="aight" sender="..." device="..." message_id="...">. ONLY use the reply tool to respond to these channel messages — your transcript output never reaches the app. Keep replies concise and readable on a small screen. You can use markdown — the app renders it.\n\nMessages typed directly in the terminal are regular user input — respond normally in the terminal. Do NOT use the reply tool for terminal messages.`,
+    instructions: `Messages from the Aight mobile app arrive as <channel source="aight" sender="..." device="..." message_id="...">. ONLY use the reply tool to respond to these channel messages — your transcript output never reaches the app. Keep replies concise and readable on a small screen. You can use markdown — the app renders it.\n\nMessages typed directly in the terminal are regular user input — respond normally in the terminal. Do NOT use the reply tool for terminal messages.\n\nThe AskUserQuestion tool is unavailable in this session (it renders a terminal picker the app can't answer). When you need the user to choose between options, ask in a normal message — for channel messages use the reply tool — and present the options as a short numbered list. The app renders numbered options as tappable choices, and the user's pick comes back as an ordinary message.`,
   },
 );
 
@@ -466,10 +466,15 @@ function handleHookEvent(event: Record<string, unknown>): Record<string, unknown
     return;
   }
 
-  // AskUserQuestion blocks the interactive CLI on a terminal picker the app
-  // can't satisfy. Intercept it at PreToolUse: render the choices in the app
-  // and deny the native tool so the agent doesn't freeze. The user's tap comes
-  // back as an ordinary channel message.
+  // Fallback safety net for AskUserQuestion. The primary fix is the launch flag
+  // `--disallowedTools AskUserQuestion` (see setup): the tool is then absent and
+  // the model never calls it. This intercept only fires for sessions started
+  // without that flag (e.g. an old shell function). It broadcasts the choices to
+  // the app and denies the tool — but note: a PreToolUse deny does NOT suppress
+  // the terminal picker in interactive TTY mode (the picker renders on a path
+  // that doesn't gate on the hook decision), so the picker may still appear and
+  // block until escaped. The deny IS delivered to the model. Upgrading the shell
+  // function to pass the disallow flag is the real fix.
   //
   // Only deny if the question actually reached a connected app — otherwise the
   // agent would be told "shown on mobile, wait for the reply" with no app able

@@ -142,7 +142,17 @@ aight-claude() {
     c.mcpServers.aight = { command: 'bun', args: ['run','--cwd','$HOME/.claude/channels/aight','--shell=bun','--silent','start'] };
     fs.writeFileSync('.mcp.json', JSON.stringify(c,null,2)+'\n');
   "
-  claude --dangerously-load-development-channels server:aight "$@"
+  # AskUserQuestion renders a blocking terminal picker that the phone app can't
+  # satisfy and that a PreToolUse "deny" cannot suppress in interactive TTY mode
+  # (the picker renders on a path that doesn't gate on the hook decision). An
+  # aight session is driven from the app, so disable the tool entirely: the model
+  # then asks questions as a normal reply with numbered options, which the app
+  # already renders as tappable choices.
+  # Use the `=` form: --disallowedTools takes a variadic <tools...> list and the
+  # space form would greedily swallow a trailing positional prompt from "$@"
+  # (e.g. `aight-claude "do the thing"`). The `=` form binds exactly one value.
+  claude --dangerously-load-development-channels server:aight \
+    --disallowedTools=AskUserQuestion "$@"
   local rc=$?
   _aight_restore
   trap - INT TERM
