@@ -40,7 +40,7 @@ import {
   claimFilePath,
 } from "./utils";
 
-import { writeFileSync, mkdirSync, readFileSync, unlinkSync, statSync } from "fs";
+import { writeFileSync, mkdirSync, readFileSync, unlinkSync, statSync, renameSync, readdirSync } from "fs";
 import { join, extname, basename } from "path";
 import { homedir } from "os";
 
@@ -49,11 +49,110 @@ const RELAY_URL = process.env.AIGHT_RELAY_URL || "https://channels.aight.cool";
 const STATE_DIR = join(homedir(), ".claude", "channels", "aight");
 const INBOX_DIR = join(STATE_DIR, "inbox");
 const CODE_FILE = join(STATE_DIR, `pairing-code-${process.pid}.txt`);
+const GLOBAL_SETTINGS_FILE = join(homedir(), ".claude", "settings.json");
 
 const AIGHT_HOOK_PORT = 7891;
 const AIGHT_HOOK_PATH = "/aight-hook";
 
 mkdirSync(INBOX_DIR, { recursive: true, mode: 0o700 });
+
+// Extended thinking causes "thinking blocks cannot be modified" API errors when
+// Claude makes tool calls on Opus 4.8. Disable it for the lifetime of this plugin
+// instance and restore on exit so other sessions aren't permanently affected.
+//
+// Crash safety: each instance writes a per-PID claim file recording the original
+// value. On the next startup, stale claim files (dead PIDs) are read before
+// deletion so we can recover the original value and take over restore responsibility.
+// Atomic writes (write-to-temp → rename) prevent settings.json corruption on crash.
+type ThinkingRestoreValue = boolean | "absent";
+let thinkingRestoreValue: ThinkingRestoreValue | null = null;
+let weHoldThinkingClaim = false;
+const THINKING_CLAIM_FILE = join(STATE_DIR, `thinking-claim-${process.pid}.txt`);
+
+function parseThinkingClaimContent(content: string): ThinkingRestoreValue | null {
+  const s = content.trim();
+  if (s === "absent") return "absent";
+  if (s === "true") return true;
+  if (s === "false") return false;
+  return null; // corrupt or empty — don't restore to a wrong value
+}
+
+function writeSettingsAtomic(settings: Record<string, unknown>): void {
+  const tmp = `${GLOBAL_SETTINGS_FILE}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(settings, null, 4), { mode: 0o600 });
+  renameSync(tmp, GLOBAL_SETTINGS_FILE);
+}
+
+function disableThinkingForCompatibility(): void {
+  // Scan for stale claim files from crashed instances and recover their saved original value.
+  let recoveredRestoreValue: ThinkingRestoreValue | null = null;
+  try {
+    for (const f of readdirSync(STATE_DIR)) {
+      if (!f.startsWith("thinking-claim-") || !f.endsWith(".txt")) continue;
+      const pid = parseInt(f.slice("thinking-claim-".length, -".txt".length), 10);
+      if (pid === process.pid) continue;
+      let alive = false;
+      try { process.kill(pid, 0); alive = true; } catch {}
+      if (!alive) {
+        if (recoveredRestoreValue === null) {
+          try {
+            recoveredRestoreValue = parseThinkingClaimContent(readFileSync(join(STATE_DIR, f), "utf-8"));
+          } catch {}
+        }
+        try { unlinkSync(join(STATE_DIR, f)); } catch {}
+      }
+    }
+  } catch {}
+
+  try {
+    const raw = readFileSync(GLOBAL_SETTINGS_FILE, "utf-8");
+    const settings = JSON.parse(raw) as Record<string, unknown>;
+
+    if (settings.thinking === false) {
+      if (recoveredRestoreValue !== null) {
+        // A previous instance crashed leaving thinking=false. Take over restore responsibility.
+        thinkingRestoreValue = recoveredRestoreValue;
+        console.error("[aight] Taking over thinking restore from crashed instance.");
+      } else {
+        // Either another live instance is managing this, or the user set it manually. Leave it.
+        return;
+      }
+    } else {
+      thinkingRestoreValue = "thinking" in settings ? (settings.thinking as boolean) : "absent";
+      settings.thinking = false;
+      writeSettingsAtomic(settings);
+      console.error("[aight] Set thinking=false in ~/.claude/settings.json for Opus 4.8 tool-call compatibility. Will restore on exit.");
+    }
+
+    // Write a claim file so the next startup can recover our original value if we crash.
+    const claimContent = thinkingRestoreValue === "absent" ? "absent" : String(thinkingRestoreValue);
+    writeFileSync(THINKING_CLAIM_FILE, claimContent, { mode: 0o600 });
+    weHoldThinkingClaim = true;
+  } catch (err) {
+    console.error(`[aight] Could not patch thinking setting: ${err}`);
+  }
+}
+
+function restoreThinkingSetting(): void {
+  if (!weHoldThinkingClaim) return;
+  try {
+    const raw = readFileSync(GLOBAL_SETTINGS_FILE, "utf-8");
+    const settings = JSON.parse(raw) as Record<string, unknown>;
+    if (settings.thinking === false) {
+      if (thinkingRestoreValue === "absent") {
+        delete settings.thinking;
+      } else {
+        settings.thinking = thinkingRestoreValue;
+      }
+      writeSettingsAtomic(settings);
+      console.error("[aight] Restored thinking setting in ~/.claude/settings.json");
+    }
+  } catch (err) {
+    console.error(`[aight] Could not restore thinking setting: ${err}`);
+  } finally {
+    try { unlinkSync(THINKING_CLAIM_FILE); } catch {}
+  }
+}
 
 const rateLimiter = createRateLimiter();
 
@@ -278,9 +377,10 @@ async function forwardToMCP(data: InboundMessage): Promise<void> {
 }
 
 const SESSION_FILE = join(STATE_DIR, `session-${process.pid}.txt`);
-const PID_FILES = [CODE_FILE, join(STATE_DIR, `hook-port-${process.pid}.txt`), SESSION_FILE];
+const PID_FILES = [CODE_FILE, join(STATE_DIR, `hook-port-${process.pid}.txt`), SESSION_FILE, THINKING_CLAIM_FILE];
 
 function cleanupOnExit() {
+  restoreThinkingSetting();
   const files = [...PID_FILES];
   if (ownSessionId) files.push(claimFilePath(STATE_DIR, ownSessionId));
   for (const f of files) {
@@ -300,6 +400,7 @@ process.on("SIGTERM", () => { cleanupOnExit(); process.exit(0); });
 cleanStalePidFiles(STATE_DIR, process.pid);
 cleanStaleClaims(STATE_DIR);
 cleanInbox(INBOX_DIR, LIMITS.MAX_INBOX_SIZE);
+disableThinkingForCompatibility();
 
 let ownSessionId: string | null = null;
 function handleHookEvent(event: Record<string, unknown>): void {
