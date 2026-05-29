@@ -470,19 +470,27 @@ function handleHookEvent(event: Record<string, unknown>): Record<string, unknown
   // can't satisfy. Intercept it at PreToolUse: render the choices in the app
   // and deny the native tool so the agent doesn't freeze. The user's tap comes
   // back as an ordinary channel message.
+  //
+  // Only deny if the question actually reached a connected app — otherwise the
+  // agent would be told "shown on mobile, wait for the reply" with no app able
+  // to answer, hanging forever. With no client, fall through so the native
+  // terminal picker renders (the user is at the terminal anyway).
   if (hookEvent === "PreToolUse" && toolName === "AskUserQuestion") {
     const questions = parseAskUserQuestionInput(toolInput);
     if (questions) {
-      broadcast({
+      const sent = broadcast({
         type: "ask_user_question",
         questionId: (event.tool_use_id as string) || `q_${Date.now()}`,
         questions,
         timestamp: new Date().toISOString(),
       });
-      return denyDecision(ASK_USER_QUESTION_DENY_REASON);
+      if (sent > 0) return denyDecision(ASK_USER_QUESTION_DENY_REASON);
+      console.error(
+        "[aight] AskUserQuestion: no app connected — letting the native picker render.",
+      );
     }
-    // Unparseable payload — fall through to the generic tool-event path so the
-    // event is at least surfaced rather than silently dropped.
+    // Unparseable payload or no connected app — fall through to the generic
+    // tool-event path so the event is surfaced and the native picker handles it.
   }
 
   const mapped = mapHookEvent(hookEvent);
@@ -643,15 +651,21 @@ function routeEvent(
 async function firstHookDecision(
   results: PromiseSettledResult<Response>[],
 ): Promise<Record<string, unknown> | null> {
-  for (const r of results) {
-    if (r.status !== "fulfilled") continue;
-    try {
-      const body = (await r.value.json()) as Record<string, unknown>;
-      if (body && typeof body === "object" && "hookSpecificOutput" in body) {
-        return body;
+  // Parse all bodies concurrently so a single slow/stalled body can't block a
+  // real decision from another instance. Routing normally yields one target.
+  const bodies = await Promise.all(
+    results.map(async (r) => {
+      if (r.status !== "fulfilled") return null;
+      try {
+        return (await r.value.json()) as Record<string, unknown>;
+      } catch {
+        return null; // Non-JSON or empty body — ignore.
       }
-    } catch {
-      // Non-JSON or empty body — ignore.
+    }),
+  );
+  for (const body of bodies) {
+    if (body && typeof body === "object" && "hookSpecificOutput" in body) {
+      return body;
     }
   }
   return null;

@@ -270,7 +270,9 @@ export function parseAskUserQuestionInput(
         options.push(description ? { label, description } : { label });
       }
     }
-    if (!text && options.length === 0) continue;
+    // A question with no options is unanswerable in the app (nothing to tap),
+    // so drop it — the caller falls through to the native picker instead.
+    if (options.length === 0) continue;
     questions.push({
       question: text,
       header: typeof q.header === "string" ? q.header : undefined,

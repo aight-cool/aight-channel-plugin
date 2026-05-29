@@ -94,12 +94,22 @@ describe("parseAskUserQuestionInput", () => {
     expect(parsed?.[0]?.options).toEqual([{ label: "ok" }]);
   });
 
+  it("drops questions with no options (unanswerable in the app)", () => {
+    // Text but zero options → nothing to tap → drop it → null overall so the
+    // caller falls through to the native picker.
+    expect(
+      parseAskUserQuestionInput({ questions: [{ question: "q", options: [] }] }),
+    ).toBeNull();
+    expect(
+      parseAskUserQuestionInput({ questions: [{ question: "q" }] }),
+    ).toBeNull();
+  });
+
   it("returns null for invalid or empty input", () => {
     expect(parseAskUserQuestionInput(undefined)).toBeNull();
     expect(parseAskUserQuestionInput({})).toBeNull();
     expect(parseAskUserQuestionInput({ questions: [] })).toBeNull();
     expect(parseAskUserQuestionInput({ questions: "nope" as unknown as [] })).toBeNull();
-    // A question with neither text nor options is dropped → null overall.
     expect(parseAskUserQuestionInput({ questions: [{ options: [] }] })).toBeNull();
   });
 });
