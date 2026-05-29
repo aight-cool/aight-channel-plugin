@@ -121,6 +121,33 @@ export interface OutboundAssistantMessage {
   timestamp: string;
 }
 
+/**
+ * An interactive multiple-choice question surfaced to the app.
+ *
+ * AskUserQuestion is a CLI-native blocking tool: in the interactive `claude`
+ * CLI it renders a terminal picker and freezes the main loop, so the app could
+ * never answer it (and incoming messages would never land). Instead, a
+ * PreToolUse hook denies the native tool and the plugin broadcasts the parsed
+ * questions here. The app renders tappable option chips; tapping sends the
+ * chosen label back as a normal channel message that the (now unblocked) agent
+ * receives as the answer.
+ */
+export interface OutboundUserQuestion {
+  type: "ask_user_question";
+  /** Stable id for this prompt (the tool_use id when available). */
+  questionId: string;
+  questions: Array<{
+    /** Full question text shown to the user. */
+    question: string;
+    /** Short label/tag (Claude Code caps this at ~12 chars). */
+    header?: string;
+    options: Array<{ label: string; description?: string }>;
+    /** Whether multiple options may be selected. */
+    multiSelect?: boolean;
+  }>;
+  timestamp: string;
+}
+
 export interface OutboundTurnEvent {
   type: "turn_event";
   event: "started" | "ended";
@@ -155,6 +182,7 @@ export type OutboundMessage =
   | OutboundConnected
   | OutboundToolEvent
   | OutboundAssistantMessage
+  | OutboundUserQuestion
   | OutboundTurnEvent
   | OutboundSkillsList
   | OutboundPing

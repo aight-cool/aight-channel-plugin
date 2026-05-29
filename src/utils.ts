@@ -230,6 +230,60 @@ export function summarizeToolInput(
   return JSON.stringify(toolInput).slice(0, 200);
 }
 
+export interface ParsedQuestion {
+  question: string;
+  header?: string;
+  options: Array<{ label: string; description?: string }>;
+  multiSelect?: boolean;
+}
+
+/**
+ * Parse the `questions` array from an AskUserQuestion tool_input into a clean,
+ * app-renderable shape. Returns null if the input doesn't look like a valid
+ * AskUserQuestion payload (in which case the caller should fall through to the
+ * generic tool-event path rather than intercept).
+ *
+ * Tolerant of options given as bare strings (older shapes) as well as the
+ * documented `{ label, description }` objects.
+ */
+export function parseAskUserQuestionInput(
+  toolInput: Record<string, unknown> | undefined,
+): ParsedQuestion[] | null {
+  const rawQuestions = toolInput?.questions;
+  if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) return null;
+
+  const questions: ParsedQuestion[] = [];
+  for (const raw of rawQuestions) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const q = raw as Record<string, unknown>;
+    const text = typeof q.question === "string" ? q.question : "";
+    const rawOptions = Array.isArray(q.options) ? q.options : [];
+    const options: Array<{ label: string; description?: string }> = [];
+    for (const opt of rawOptions) {
+      if (typeof opt === "string") {
+        if (opt) options.push({ label: opt });
+      } else if (opt && typeof opt === "object") {
+        const o = opt as Record<string, unknown>;
+        const label = typeof o.label === "string" ? o.label : "";
+        if (!label) continue;
+        const description = typeof o.description === "string" ? o.description : undefined;
+        options.push(description ? { label, description } : { label });
+      }
+    }
+    // A question with no options is unanswerable in the app (nothing to tap),
+    // so drop it — the caller falls through to the native picker instead.
+    if (options.length === 0) continue;
+    questions.push({
+      question: text,
+      header: typeof q.header === "string" ? q.header : undefined,
+      options,
+      multiSelect: q.multiSelect === true,
+    });
+  }
+
+  return questions.length > 0 ? questions : null;
+}
+
 export function summarizeToolResult(
   toolName: string | undefined,
   toolResult: unknown,
