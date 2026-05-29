@@ -108,7 +108,7 @@ function disableThinkingForCompatibility(): void {
     const raw = readFileSync(GLOBAL_SETTINGS_FILE, "utf-8");
     const settings = JSON.parse(raw) as Record<string, unknown>;
 
-    if (settings.thinking === false) {
+    if (settings.alwaysThinkingEnabled === false) {
       if (recoveredRestoreValue !== null) {
         // A previous instance crashed leaving thinking=false. Take over restore responsibility.
         thinkingRestoreValue = recoveredRestoreValue;
@@ -118,8 +118,8 @@ function disableThinkingForCompatibility(): void {
         return;
       }
     } else {
-      thinkingRestoreValue = "thinking" in settings ? (settings.thinking as boolean) : "absent";
-      settings.thinking = false;
+      thinkingRestoreValue = "alwaysThinkingEnabled" in settings ? (settings.alwaysThinkingEnabled as boolean) : "absent";
+      settings.alwaysThinkingEnabled = false;
       writeSettingsAtomic(settings);
       console.error("[aight] Set thinking=false in ~/.claude/settings.json for Opus 4.8 tool-call compatibility. Will restore on exit.");
     }
@@ -138,11 +138,11 @@ function restoreThinkingSetting(): void {
   try {
     const raw = readFileSync(GLOBAL_SETTINGS_FILE, "utf-8");
     const settings = JSON.parse(raw) as Record<string, unknown>;
-    if (settings.thinking === false) {
+    if (settings.alwaysThinkingEnabled === false) {
       if (thinkingRestoreValue === "absent") {
-        delete settings.thinking;
+        delete settings.alwaysThinkingEnabled;
       } else {
-        settings.thinking = thinkingRestoreValue;
+        settings.alwaysThinkingEnabled = thinkingRestoreValue;
       }
       writeSettingsAtomic(settings);
       console.error("[aight] Restored thinking setting in ~/.claude/settings.json");
