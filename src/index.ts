@@ -27,6 +27,7 @@ import {
   cleanInbox,
   mapHookEvent,
   mapSubagentEvent,
+  parseAskUserQuestionInput,
   summarizeToolInput,
   summarizeToolResult,
   extractLastAssistantText,
@@ -402,8 +403,38 @@ cleanStaleClaims(STATE_DIR);
 cleanInbox(INBOX_DIR, LIMITS.MAX_INBOX_SIZE);
 disableThinkingForCompatibility();
 
+/**
+ * A PreToolUse hook response that denies the tool call and feeds `reason` back
+ * to the model. Used to short-circuit AskUserQuestion before its blocking
+ * terminal picker renders. Claude Code reads the HTTP 200 body as the hook
+ * output, so the instance server returns this verbatim.
+ */
+function denyDecision(reason: string): Record<string, unknown> {
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: reason,
+    },
+  };
+}
+
+const ASK_USER_QUESTION_DENY_REASON =
+  "You're connected to the Aight mobile app — the interactive AskUserQuestion " +
+  "picker can't be shown or answered there and would freeze this session. The " +
+  "question and its options have already been displayed to the user in the app " +
+  "as tappable choices. Do NOT call AskUserQuestion again. Stop and wait for " +
+  "the user's reply, which will arrive as a normal channel message containing " +
+  "their chosen option(s).";
+
 let ownSessionId: string | null = null;
-function handleHookEvent(event: Record<string, unknown>): void {
+
+/**
+ * Process a hook event. Returns a hook-response object to send back to Claude
+ * Code (e.g. a PreToolUse deny decision), or undefined for the normal
+ * fire-and-forget case.
+ */
+function handleHookEvent(event: Record<string, unknown>): Record<string, unknown> | undefined {
   const hookEvent = event.hook_event_name as string | undefined;
   const sessionId = event.session_id as string | undefined;
   const toolName = event.tool_name as string | undefined;
@@ -433,6 +464,25 @@ function handleHookEvent(event: Record<string, unknown>): void {
       timestamp: new Date().toISOString(),
     });
     return;
+  }
+
+  // AskUserQuestion blocks the interactive CLI on a terminal picker the app
+  // can't satisfy. Intercept it at PreToolUse: render the choices in the app
+  // and deny the native tool so the agent doesn't freeze. The user's tap comes
+  // back as an ordinary channel message.
+  if (hookEvent === "PreToolUse" && toolName === "AskUserQuestion") {
+    const questions = parseAskUserQuestionInput(toolInput);
+    if (questions) {
+      broadcast({
+        type: "ask_user_question",
+        questionId: (event.tool_use_id as string) || `q_${Date.now()}`,
+        questions,
+        timestamp: new Date().toISOString(),
+      });
+      return denyDecision(ASK_USER_QUESTION_DENY_REASON);
+    }
+    // Unparseable payload — fall through to the generic tool-event path so the
+    // event is at least surfaced rather than silently dropped.
   }
 
   const mapped = mapHookEvent(hookEvent);
@@ -491,8 +541,10 @@ const instanceHookServer = Bun.serve({
   async fetch(req) {
     if (req.method === "POST" && new URL(req.url).pathname === AIGHT_HOOK_PATH) {
       try {
-        handleHookEvent((await req.json()) as Record<string, unknown>);
-        return Response.json({ ok: true });
+        const decision = handleHookEvent((await req.json()) as Record<string, unknown>);
+        // A decision (e.g. PreToolUse deny) is returned as the hook output body;
+        // Claude Code reads the 200 body to act on it. Otherwise ack normally.
+        return Response.json(decision ?? { ok: true });
       } catch (err) {
         console.error(`[aight] Hook event parse error: ${err}`);
         return Response.json({ error: "Invalid JSON" }, { status: 400 });
@@ -582,6 +634,29 @@ function routeEvent(
   return targets;
 }
 
+/**
+ * From the proxied instance responses, return the first body that carries a
+ * real hook decision (a `hookSpecificOutput`), or null if all are plain acks /
+ * failures. Lets a single owning instance's PreToolUse deny propagate to Claude
+ * Code even when the event was fanned out to several instances.
+ */
+async function firstHookDecision(
+  results: PromiseSettledResult<Response>[],
+): Promise<Record<string, unknown> | null> {
+  for (const r of results) {
+    if (r.status !== "fulfilled") continue;
+    try {
+      const body = (await r.value.json()) as Record<string, unknown>;
+      if (body && typeof body === "object" && "hookSpecificOutput" in body) {
+        return body;
+      }
+    } catch {
+      // Non-JSON or empty body — ignore.
+    }
+  }
+  return null;
+}
+
 try {
   Bun.serve({
     port: AIGHT_HOOK_PORT,
@@ -626,7 +701,12 @@ try {
           }
         }
 
-        return Response.json({ ok: true });
+        // Forward the owning instance's hook output back to Claude Code so
+        // decisions (e.g. an AskUserQuestion PreToolUse deny) take effect.
+        // Routing usually resolves to the single owning instance; on fan-out we
+        // surface the first real decision and otherwise ack.
+        const decision = await firstHookDecision(results);
+        return Response.json(decision ?? { ok: true });
       }
       return new Response("Not found", { status: 404 });
     },
