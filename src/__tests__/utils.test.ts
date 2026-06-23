@@ -49,6 +49,10 @@ describe("isAightChannelPrompt", () => {
     expect(isAightChannelPrompt('<channel source="slack">hi</channel>')).toBe(false);
   });
 
+  it("ignores the bare attribute outside a channel tag (pasted text)", () => {
+    expect(isAightChannelPrompt('my notes: source="aight" is the value')).toBe(false);
+  });
+
   it("is safe for non-string input", () => {
     expect(isAightChannelPrompt(undefined)).toBe(false);
     expect(isAightChannelPrompt(null)).toBe(false);
