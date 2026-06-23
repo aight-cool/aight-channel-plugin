@@ -214,6 +214,15 @@ export function mapSubagentEvent(hookEvent: string): "subagent_start" | "subagen
   return SUBAGENT_EVENT_MAP[hookEvent];
 }
 
+/**
+ * Whether a UserPromptSubmit prompt originated from the Aight app. The harness
+ * wraps app-delivered messages as <channel source="aight" …>; terminal input
+ * has no such wrapper. Used to inject a just-in-time "reply via the app" nudge.
+ */
+export function isAightChannelPrompt(prompt: unknown): boolean {
+  return typeof prompt === "string" && prompt.includes('source="aight"');
+}
+
 const FILE_PATH_TOOLS = new Set(["Read", "Edit", "Write"]);
 
 export function summarizeToolInput(

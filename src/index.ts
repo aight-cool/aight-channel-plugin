@@ -27,6 +27,7 @@ import {
   cleanInbox,
   mapHookEvent,
   mapSubagentEvent,
+  isAightChannelPrompt,
   parseAskUserQuestionInput,
   summarizeToolInput,
   summarizeToolResult,
@@ -427,6 +428,20 @@ const ASK_USER_QUESTION_DENY_REASON =
   "the user's reply, which will arrive as a normal channel message containing " +
   "their chosen option(s).";
 
+/**
+ * Just-in-time reminder injected on every prompt that arrives from the Aight
+ * app. The MCP server already states this in its static `instructions`, but a
+ * model can drift from server instructions over a long session and answer in
+ * the terminal (which the app never sees). Re-stating it per-turn, scoped to
+ * app-originated prompts, keeps the reply path reliable without nagging on
+ * ordinary terminal input.
+ */
+const AIGHT_REPLY_REMINDER =
+  "This prompt arrived from the Aight mobile app. Your terminal output does " +
+  "NOT reach the app — respond using the `reply` tool, and keep it concise for " +
+  "a small screen. (A task/analysis request meant for the terminal is the one " +
+  "exception — handle that in the terminal as usual.)";
+
 let ownSessionId: string | null = null;
 
 /**
@@ -463,6 +478,14 @@ function handleHookEvent(event: Record<string, unknown>): Record<string, unknown
       event: "started",
       timestamp: new Date().toISOString(),
     });
+    if (isAightChannelPrompt(event.prompt)) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          additionalContext: AIGHT_REPLY_REMINDER,
+        },
+      };
+    }
     return;
   }
 
