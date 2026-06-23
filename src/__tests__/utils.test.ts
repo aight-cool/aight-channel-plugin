@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  isAightChannelPrompt,
   mapHookEvent,
   mapSubagentEvent,
   parseAskUserQuestionInput,
@@ -28,6 +29,34 @@ describe("mapSubagentEvent", () => {
   it("returns undefined for non-subagent events", () => {
     expect(mapSubagentEvent("PreToolUse")).toBeUndefined();
     expect(mapSubagentEvent("Unknown")).toBeUndefined();
+  });
+});
+
+describe("isAightChannelPrompt", () => {
+  it("detects an Aight channel-wrapped prompt", () => {
+    expect(
+      isAightChannelPrompt(
+        '<channel source="aight" sender="User" message_id="msg_1">hi</channel>',
+      ),
+    ).toBe(true);
+  });
+
+  it("ignores plain terminal prompts", () => {
+    expect(isAightChannelPrompt("fix the bug in foo.ts")).toBe(false);
+  });
+
+  it("ignores other channel sources", () => {
+    expect(isAightChannelPrompt('<channel source="slack">hi</channel>')).toBe(false);
+  });
+
+  it("ignores the bare attribute outside a channel tag (pasted text)", () => {
+    expect(isAightChannelPrompt('my notes: source="aight" is the value')).toBe(false);
+  });
+
+  it("is safe for non-string input", () => {
+    expect(isAightChannelPrompt(undefined)).toBe(false);
+    expect(isAightChannelPrompt(null)).toBe(false);
+    expect(isAightChannelPrompt(42)).toBe(false);
   });
 });
 
