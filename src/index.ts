@@ -48,7 +48,8 @@ import { homedir } from "os";
 
 
 const RELAY_URL = process.env.AIGHT_RELAY_URL || "https://channels.aight.cool";
-const STATE_DIR = join(homedir(), ".claude", "channels", "aight");
+// Overridable so tests (and alternate installs) don't touch the live channel state directory.
+const STATE_DIR = process.env.AIGHT_STATE_DIR || join(homedir(), ".claude", "channels", "aight");
 const INBOX_DIR = join(STATE_DIR, "inbox");
 const CODE_FILE = join(STATE_DIR, `pairing-code-${process.pid}.txt`);
 const GLOBAL_SETTINGS_FILE = join(homedir(), ".claude", "settings.json");
@@ -762,6 +763,50 @@ console.error(`[aight] Instance hook listener on port ${instanceHookPort}`);
 
 const transport = new StdioServerTransport();
 await mcp.connect(transport);
+
+// Parent-death watchdog. This is a stdio MCP server spawned per Claude Code session; the SDK's
+// stdio transport keeps the event loop alive forever, so if the parent (Claude Code) dies WITHOUT
+// cleanly terminating us — a crash, SIGKILL, or a harness that doesn't reap children — this process
+// is reparented to launchd (ppid 1) and lingers indefinitely, leaking both the process and its
+// claim-<sid>.txt lock. Over many session restarts these orphans accumulate (240+ observed) and
+// starve the machine. Detect orphaning and exit cleanly so cleanupOnExit runs.
+//
+// Two independent signals, because neither alone is sufficient:
+//   1. stdin end/close — the normal signal that the parent closed our pipe.
+//   2. a periodic getppid() check — catches the case where the pipe stays half-open after the
+//      parent is SIGKILLed; on macOS/Linux an orphan's ppid becomes 1 (or the launchd pid).
+const INITIAL_PPID = process.ppid;
+let exiting = false;
+function exitOrphaned(reason: string): void {
+  if (exiting) return;
+  exiting = true;
+  console.error(`[aight] Parent process gone (${reason}); exiting to avoid orphan leak.`);
+  // process.exit fires the "exit" handler → cleanupOnExit removes the claim + pid files.
+  process.exit(0);
+}
+// NOTE: Bun caches `process.ppid` at startup — it does NOT update when the process is reparented to
+// init after its parent dies. So the OS parent pid must be read LIVE. `ps -o ppid= -p <self>` is a
+// cheap, portable (macOS/Linux) way to get the current parent; on orphaning it returns 1.
+function readLiveParentPid(): number | null {
+  try {
+    const out = Bun.spawnSync(["ps", "-o", "ppid=", "-p", String(process.pid)]).stdout.toString().trim();
+    const n = Number.parseInt(out, 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+const parentWatch = setInterval(() => {
+  const livePpid = readLiveParentPid();
+  // Reparented to init (pid 1) = the original parent died and did not reap us. Guard on
+  // INITIAL_PPID > 1 so a process legitimately launched directly under init isn't mistaken for one.
+  if (INITIAL_PPID > 1 && livePpid === 1) exitOrphaned(`ppid ${INITIAL_PPID} -> 1`);
+}, 5_000);
+// Don't let the watchdog timer itself keep the event loop alive.
+parentWatch.unref?.();
+// stdin end/close = the parent closed our pipe (the normal MCP-child shutdown signal).
+process.stdin.on("end", () => exitOrphaned("stdin ended"));
+process.stdin.on("close", () => exitOrphaned("stdin closed"));
 
 console.error(`\n[aight] Connecting to relay at ${RELAY_URL}`);
 
